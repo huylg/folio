@@ -299,39 +299,56 @@ public final class NativeDocumentView: NSView {
     /// Long enough to coalesce an animation — a sidebar toggle is a couple of hundred milliseconds
     /// of width changes at display rate — and short enough that a settled window reflows before
     /// the reader notices the columns are the wrong width.
-    private static let reflowSettleDelay: TimeInterval = 0.05
+    static let reflowSettleDelay: TimeInterval = 0.05
 
     /// True while the reader is dragging the window's edge.
     private var isLiveResizing = false
-    /// Set when a size change arrived during a live resize, and applied when the drag ends.
-    private var needsReflowAfterLiveResize = false
     /// Set when a size change arrived mid-navigation, and applied once the scroll lands.
     private var needsReflowAfterNavigation = false
 
-    /// Reflowing means measuring every component, which is linear in the document.
-    ///
-    /// A book measures in the hundreds of milliseconds, and a live resize sends a size change per
-    /// *point* of drag — so reflowing on each one wedged the main thread for the length of the
-    /// drag and the app stopped responding. The layout in view stretches with the window during
-    /// the drag; the reflow happens once, when it ends.
     public override func viewWillStartLiveResize() {
         super.viewWillStartLiveResize()
         isLiveResizing = true
+        reflowCost = 0
     }
 
     public override func viewDidEndLiveResize() {
         super.viewDidEndLiveResize()
         isLiveResizing = false
-        guard needsReflowAfterLiveResize else { return }
-        needsReflowAfterLiveResize = false
-        scheduleReflow()
     }
 
+    /// Whether a hand is on whatever is changing the pane's size.
+    ///
+    /// The distinction the reflow rate turns on. A drag — the window's edge, the sidebar's divider
+    /// — wants the page to follow it, and the reader is watching the text while they do it. An
+    /// animation wants the opposite: reflowing on each of its frames was the lurch that made a
+    /// sidebar toggle re-paginate the document a dozen times and move everything twice.
+    ///
+    /// Injected so a test can stand in for the hand; a divider drag does not survive being
+    /// synthesized.
+    static var isDragging: () -> Bool = { NSEvent.pressedMouseButtons & 1 != 0 }
+
+    /// How long the last reflow took, and the most it may take to be worth doing under the hand.
+    ///
+    /// Reflowing measures every component, which is linear in the document, and a drag sends a
+    /// size change per *point*. That is why this used to wait for the drag to end: a book at
+    /// hundreds of milliseconds a reflow wedged the main thread for as long as the drag lasted.
+    /// Measurement has since stopped throwing its cache away and stopped looking up columns
+    /// quadratically — a four-thousand component book now reflows in tens of milliseconds — and
+    /// the budget is what keeps that claim honest rather than assumed. A document slower than this
+    /// stops following the drag and lands once, at the end.
+    private var reflowCost: TimeInterval = 0
+    static var liveReflowBudget: TimeInterval = 0.030
+    /// The shortest gap between two reflows under the hand.
+    ///
+    /// A rate limit, not a wait: the first change of a drag goes through at once, and only the ones
+    /// after it are held to this. Applied as a wait — which is what a debounce is — the page
+    /// trailed the edge by this long on every step, starting with the first.
+    static var liveReflowInterval: TimeInterval = 0.08
+
+    private var lastReflowTime = Date.distantPast
+
     private func scheduleReflow() {
-        if isLiveResizing {
-            needsReflowAfterLiveResize = true
-            return
-        }
         // A reflow ends by putting the reader back where they were, which fights an animated
         // navigation for the viewport: the scroll gets cancelled halfway and lands back where it
         // started. The animation's completion handler asks for the reflow instead.
@@ -339,16 +356,33 @@ public final class NativeDocumentView: NSView {
             needsReflowAfterNavigation = true
             return
         }
-        // Debounced: each size change replaces the pending reflow, so an animation reflows once,
-        // at the end, instead of on every frame.
+        // A trailing reflow is always queued, and each size change replaces the last one's. It is
+        // what lands after the final change of a drag, and the only one an animation gets.
         reflowWork?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.reflow() }
         reflowWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.reflowSettleDelay, execute: work)
+
+        // And under the hand, one now — subject to the rate limit and the budget.
+        guard isLiveResizing || Self.isDragging(),
+              reflowCost <= Self.liveReflowBudget,
+              Date().timeIntervalSince(lastReflowTime) >= Self.liveReflowInterval
+        else { return }
+        // Never synchronously: this is called from `layout()`, and measuring inside layout
+        // re-enters it. The next turn of the main queue is the same frame to a reader.
+        DispatchQueue.main.async { [weak self] in self?.reflow() }
     }
 
     private func reflow() {
+        // Whichever reflow gets here first does the work; a trailing one queued behind it would
+        // measure the same widths again for nothing.
+        reflowWork?.cancel()
         reflowWork = nil
+        let started = Date()
+        defer {
+            reflowCost = Date().timeIntervalSince(started)
+            lastReflowTime = Date()
+        }
         // Theirs if they have one; a fresh reading otherwise, for the first layout of a document.
         let anchor = readingAnchor ?? captureScrollAnchor()
         // For the whole reflow, not just the scroll at the end of it: measuring changes the
