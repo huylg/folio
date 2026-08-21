@@ -665,17 +665,28 @@ public final class DocumentStackView: NSView {
     /// change of text size, a sidebar toggle. Scrolling is unaffected: it installs views at their
     /// places and moves nothing, so there is never anything to slide.
     public var animatesPlacement = true
-    static var glideDuration: TimeInterval = 0.14
 
-    private struct Glide {
-        let view: NSView
-        var from: NSPoint
-        var to: NSPoint
-        var started: Date
-    }
+    /// How quickly a component closes the distance to where it belongs, as a time constant: it
+    /// covers about 63% of what is left every `glideTau`, so ~95% in three of them.
+    ///
+    /// A *rate*, not a duration, and that is the whole point. Given a fixed duration the movement
+    /// had no consistent character: a drag step moves a paragraph a few points and it was over
+    /// inside one frame, while a re-pagination moves it half a page and it crawled — the same
+    /// setting reading as both instant and sluggish depending on the step. A rate gives every
+    /// movement the same feel, and re-aiming mid-flight — which a drag does several times a second
+    /// — needs no restart, because there is no clock to restart.
+    static var glideTau: TimeInterval = 0.04
 
-    private var glides: [ObjectIdentifier: Glide] = [:]
+    /// Past this, a component is not moving, it is somewhere else.
+    ///
+    /// A re-pagination can send a paragraph a whole page up the document. Sliding that far is not
+    /// something an eye can follow — it is a long smear across unrelated text — so it is simply
+    /// placed there.
+    static var maxGlideDistance: CGFloat = 600
+
+    private var glides: [ObjectIdentifier: (view: NSView, target: NSPoint)] = [:]
     private var glideTimer: Timer?
+    private var lastGlideStep = Date()
 
     deinit { glideTimer?.invalidate() }
 
@@ -683,22 +694,23 @@ public final class DocumentStackView: NSView {
         glides[ObjectIdentifier(view)] != nil
     }
 
-    /// Starts a view towards `frame`, or re-aims one already on its way.
-    ///
-    /// A drag re-measures several times a second, so re-aiming is the common case: the new journey
-    /// starts from wherever the view has got to, which is what keeps a run of steps looking like
-    /// one movement.
+    /// Sends a view towards `frame`, or re-aims one already on its way.
     private func glide(_ view: NSView, to frame: NSRect) {
-        let id = ObjectIdentifier(view)
         if view.frame.size != frame.size { view.setFrameSize(frame.size) }
-        guard glides[id]?.to != frame.origin, view.frame.origin != frame.origin else { return }
-        glides[id] = Glide(view: view, from: view.frame.origin, to: frame.origin,
-                           started: Date())
+        let id = ObjectIdentifier(view)
+        guard view.frame.origin != frame.origin else {
+            glides.removeValue(forKey: id)
+            return
+        }
+        glides[id] = (view, frame.origin)
         guard glideTimer == nil else { return }
-        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
+        lastGlideStep = Date()
+        let timer = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] _ in
             self?.stepGlides()
         }
         glideTimer = timer
+        // The common modes because a window's edge and a divider are both dragged inside AppKit's
+        // own event tracking, where a timer scheduled the ordinary way does not fire at all.
         RunLoop.current.add(timer, forMode: .common)
     }
 
@@ -714,18 +726,24 @@ public final class DocumentStackView: NSView {
 
     private func stepGlides() {
         let now = Date()
+        // Measured, not assumed: a drag competes with this for the main thread, and a tick that
+        // arrives late has to cover the ground it missed or the movement falls behind the layout.
+        let dt = min(0.1, now.timeIntervalSince(lastGlideStep))
+        lastGlideStep = now
+        let factor = CGFloat(1 - exp(-dt / Self.glideTau))
+
         for (id, glide) in glides {
-            let elapsed = now.timeIntervalSince(glide.started)
-            let t = Self.glideDuration > 0
-                ? min(1, CGFloat(elapsed / Self.glideDuration))
-                : 1
-            // Ease out: fastest where the movement is obvious, slowest where it lands.
-            let eased = 1 - pow(1 - t, 3)
-            glide.view.setFrameOrigin(NSPoint(
-                x: glide.from.x + (glide.to.x - glide.from.x) * eased,
-                y: glide.from.y + (glide.to.y - glide.from.y) * eased
-            ))
-            if t >= 1 { glides.removeValue(forKey: id) }
+            let origin = glide.view.frame.origin
+            let dx = glide.target.x - origin.x
+            let dy = glide.target.y - origin.y
+            // Half a point from home is home; anything less is a redraw nobody can see.
+            if abs(dx) < 0.5, abs(dy) < 0.5 {
+                glide.view.setFrameOrigin(glide.target)
+                glides.removeValue(forKey: id)
+                continue
+            }
+            glide.view.setFrameOrigin(NSPoint(x: origin.x + dx * factor,
+                                              y: origin.y + dy * factor))
         }
         if glides.isEmpty { stopGlideTimer() }
     }
@@ -735,8 +753,8 @@ public final class DocumentStackView: NSView {
 
     var glideDistanceForTests: CGFloat {
         glides.values.reduce(0) { furthest, glide in
-            max(furthest, max(abs(glide.view.frame.origin.x - glide.to.x),
-                              abs(glide.view.frame.origin.y - glide.to.y)))
+            max(furthest, max(abs(glide.view.frame.origin.x - glide.target.x),
+                              abs(glide.view.frame.origin.y - glide.target.y)))
         }
     }
 
@@ -774,7 +792,8 @@ public final class DocumentStackView: NSView {
             // snap into place a moment after starting to slide.
             if isGliding(view) {
                 glide(view, to: frame)
-            } else if let was = previous[ObjectIdentifier(view)], was.origin != frame.origin {
+            } else if let was = previous[ObjectIdentifier(view)], was.origin != frame.origin,
+                      abs(was.origin.y - frame.origin.y) <= Self.maxGlideDistance {
                 // Put it back where the reader last saw it, at its new size, and send it over.
                 view.frame = NSRect(origin: was.origin, size: frame.size)
                 glide(view, to: frame)

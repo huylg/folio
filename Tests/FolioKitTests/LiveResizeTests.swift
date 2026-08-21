@@ -152,9 +152,9 @@ final class LiveResizeTests: XCTestCase {
     func testComponentsSlideToTheirNewPlaces() throws {
         let (view, window) = try pane(width: 900)
         let stack = view.stackView
-        // Long enough to still be under way when the assertions look at it.
-        DocumentStackView.glideDuration = 5
-        addTeardownBlock { DocumentStackView.glideDuration = 0.14 }
+        // Slow enough to still be under way when the assertions look at it.
+        DocumentStackView.glideTau = 5
+        addTeardownBlock { DocumentStackView.glideTau = 0.04 }
 
         held = true
         resize(window, view, to: 460, settling: 0)
@@ -188,8 +188,8 @@ final class LiveResizeTests: XCTestCase {
     func testTheWidthIsNotInterpolated() throws {
         let (view, window) = try pane(width: 900)
         let stack = view.stackView
-        DocumentStackView.glideDuration = 5
-        addTeardownBlock { DocumentStackView.glideDuration = 0.14 }
+        DocumentStackView.glideTau = 5
+        addTeardownBlock { DocumentStackView.glideTau = 0.04 }
 
         held = true
         resize(window, view, to: 460, settling: 0)
@@ -200,5 +200,43 @@ final class LiveResizeTests: XCTestCase {
         let widths = Set(stack.subviews.filter { $0.frame.width > 1 }.map { $0.frame.width })
         XCTAssertTrue(widths.contains { abs($0 - stack.columnWidth) < 2 },
                       "no component is at the new measure: \(widths.sorted())")
+    }
+
+    /// However far a component has to go, it gets there promptly.
+    ///
+    /// A fixed duration gave the movement no consistent character: a drag step moves a paragraph a
+    /// few points and it was over inside a frame, while a re-pagination moves it half a page and it
+    /// crawled — one setting reading as both instant and sluggish. A rate is the same in both.
+    func testAGlideLandsPromptly() throws {
+        let (view, window) = try pane(width: 900)
+        let stack = view.stackView
+
+        held = true
+        resize(window, view, to: 460, settling: 0)
+        XCTAssertTrue(waitUntil { stack.isGlidingForTests }, "nothing moved")
+        held = false
+
+        let started = Date()
+        XCTAssertTrue(waitUntil(1) { !stack.isGlidingForTests }, "the glide never landed")
+        XCTAssertLessThan(Date().timeIntervalSince(started), DocumentStackView.glideTau * 12,
+                          "the glide took far longer than its own rate implies")
+    }
+
+    /// Past a point a component is not moving, it is somewhere else, and it is put there.
+    func testAMoveTooFarToFollowIsNotAnimated() throws {
+        let (view, window) = try pane(width: 900)
+        let stack = view.stackView
+        DocumentStackView.maxGlideDistance = 1
+        DocumentStackView.glideTau = 5
+        addTeardownBlock {
+            DocumentStackView.maxGlideDistance = 600
+            DocumentStackView.glideTau = 0.04
+        }
+
+        held = true
+        resize(window, view, to: 460)
+        held = false
+        XCTAssertFalse(stack.isGlidingForTests,
+                       "a move too far to follow was animated across the page anyway")
     }
 }
