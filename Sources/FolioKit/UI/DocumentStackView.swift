@@ -642,6 +642,104 @@ public final class DocumentStackView: NSView {
         columnWidth > 0 ? columnWidth : bounds.width
     }
 
+    // MARK: Gliding
+
+    // A re-measure moves components: a paragraph that was at the top of the second column is now
+    // halfway down the first, and at a drag's rate that arrives as a flicker of everything at
+    // once. Sliding them to their new places is what makes a resize read as the page rearranging
+    // rather than as the page being replaced.
+    //
+    // Only the origin is interpolated. The size is applied at once, so the text wraps once, at the
+    // measure it is going to keep — an interpolated width would re-wrap every line on every frame,
+    // which is both expensive and the very churn this is meant to smooth over.
+    //
+    // Driven by a timer in the common run loop modes rather than by `animator()`, for two reasons:
+    // AppKit's animation timer does not fire while a window's edge is being dragged, which is
+    // exactly when this is wanted; and Core Animation would need every component layer-backed,
+    // which makes the stack layer-backed too — a backing store the height of the whole document.
+
+    /// Whether components slide to their new places. On by default, and off for a test that wants
+    /// to read a finished layout without waiting for it.
+    ///
+    /// It applies to any pass that moves a component that was already on screen — a resize, a
+    /// change of text size, a sidebar toggle. Scrolling is unaffected: it installs views at their
+    /// places and moves nothing, so there is never anything to slide.
+    public var animatesPlacement = true
+    static var glideDuration: TimeInterval = 0.14
+
+    private struct Glide {
+        let view: NSView
+        var from: NSPoint
+        var to: NSPoint
+        var started: Date
+    }
+
+    private var glides: [ObjectIdentifier: Glide] = [:]
+    private var glideTimer: Timer?
+
+    deinit { glideTimer?.invalidate() }
+
+    private func isGliding(_ view: NSView) -> Bool {
+        glides[ObjectIdentifier(view)] != nil
+    }
+
+    /// Starts a view towards `frame`, or re-aims one already on its way.
+    ///
+    /// A drag re-measures several times a second, so re-aiming is the common case: the new journey
+    /// starts from wherever the view has got to, which is what keeps a run of steps looking like
+    /// one movement.
+    private func glide(_ view: NSView, to frame: NSRect) {
+        let id = ObjectIdentifier(view)
+        if view.frame.size != frame.size { view.setFrameSize(frame.size) }
+        guard glides[id]?.to != frame.origin, view.frame.origin != frame.origin else { return }
+        glides[id] = Glide(view: view, from: view.frame.origin, to: frame.origin,
+                           started: Date())
+        guard glideTimer == nil else { return }
+        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
+            self?.stepGlides()
+        }
+        glideTimer = timer
+        RunLoop.current.add(timer, forMode: .common)
+    }
+
+    private func stopGliding(_ view: NSView) {
+        glides.removeValue(forKey: ObjectIdentifier(view))
+        if glides.isEmpty { stopGlideTimer() }
+    }
+
+    private func stopGlideTimer() {
+        glideTimer?.invalidate()
+        glideTimer = nil
+    }
+
+    private func stepGlides() {
+        let now = Date()
+        for (id, glide) in glides {
+            let elapsed = now.timeIntervalSince(glide.started)
+            let t = Self.glideDuration > 0
+                ? min(1, CGFloat(elapsed / Self.glideDuration))
+                : 1
+            // Ease out: fastest where the movement is obvious, slowest where it lands.
+            let eased = 1 - pow(1 - t, 3)
+            glide.view.setFrameOrigin(NSPoint(
+                x: glide.from.x + (glide.to.x - glide.from.x) * eased,
+                y: glide.from.y + (glide.to.y - glide.from.y) * eased
+            ))
+            if t >= 1 { glides.removeValue(forKey: id) }
+        }
+        if glides.isEmpty { stopGlideTimer() }
+    }
+
+    /// Whether anything is still on its way, and how far from home it is — for a test.
+    var isGlidingForTests: Bool { !glides.isEmpty }
+
+    var glideDistanceForTests: CGFloat {
+        glides.values.reduce(0) { furthest, glide in
+            max(furthest, max(abs(glide.view.frame.origin.x - glide.to.x),
+                              abs(glide.view.frame.origin.y - glide.to.y)))
+        }
+    }
+
     public override func layout() {
         super.layout()
         measure(width: contentWidth)
@@ -654,24 +752,47 @@ public final class DocumentStackView: NSView {
         let viewport = visibleRect.isEmpty ? bounds : visibleRect
         let wanted = viewport.insetBy(dx: 0, dy: -Self.overscan)
 
+        // Where each view on screen is *now*, before anything is moved.
+        //
+        // Keyed by the view and not by the placement, because a re-measure renumbers placements:
+        // the same paragraph is placement 40 before and placement 33 after, so `live` misses, the
+        // view comes back from the retain pool instead, and every component would look new. That is
+        // why an earlier attempt at this animated nothing.
+        var previous: [ObjectIdentifier: NSRect] = [:]
+        if animatesPlacement {
+            for view in live.values { previous[ObjectIdentifier(view)] = view.frame }
+        }
+
         var keep = Set<Int>()
         for placement in frames.indices {
             let frame = self.frame(ofPlacement: placement)
             guard frame.maxY >= wanted.minY, frame.minY <= wanted.maxY else { continue }
             keep.insert(placement)
-            let view = live[placement] ?? install(placement)
-            if view.frame != frame { view.frame = frame }
+            let view = live[placement] ?? install(placement, at: frame)
+            // A view already on its way keeps going, whoever asked for this pass: scrolling and
+            // populating both land here, and cancelling a glide from one of those made the page
+            // snap into place a moment after starting to slide.
+            if isGliding(view) {
+                glide(view, to: frame)
+            } else if let was = previous[ObjectIdentifier(view)], was.origin != frame.origin {
+                // Put it back where the reader last saw it, at its new size, and send it over.
+                view.frame = NSRect(origin: was.origin, size: frame.size)
+                glide(view, to: frame)
+            } else if view.frame != frame {
+                view.frame = frame
+            }
         }
 
         for (placement, view) in live where !keep.contains(placement) {
+            stopGliding(view)
             retire(view)
             live.removeValue(forKey: placement)
         }
     }
 
-    private func install(_ placement: Int) -> NSView {
+    private func install(_ placement: Int, at frame: NSRect) -> NSView {
         let view = makeView(for: placement)
-        view.frame = frame(ofPlacement: placement)
+        view.frame = frame
         (view as? DimmableComponent)?.isDimmed =
             focusedComponent != nil && focusedComponent != componentOfPlacement[placement]
         addSubview(view)

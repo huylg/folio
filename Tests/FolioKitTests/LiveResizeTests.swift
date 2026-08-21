@@ -143,4 +143,62 @@ final class LiveResizeTests: XCTestCase {
         XCTAssertTrue(waitUntil { view.stackView.columnWidth < before },
                       "the reflow it kept skipping never happened")
     }
+
+    /// Components slide to their new places rather than appearing in them.
+    ///
+    /// A re-measure moves everything at once — a paragraph that was at the top of the second column
+    /// is now halfway down the first — and at a drag's rate that arrives as a flicker of the whole
+    /// page.
+    func testComponentsSlideToTheirNewPlaces() throws {
+        let (view, window) = try pane(width: 900)
+        let stack = view.stackView
+        // Long enough to still be under way when the assertions look at it.
+        DocumentStackView.glideDuration = 5
+        addTeardownBlock { DocumentStackView.glideDuration = 0.14 }
+
+        held = true
+        resize(window, view, to: 460, settling: 0)
+        XCTAssertTrue(waitUntil { stack.isGlidingForTests },
+                      "nothing was gliding: the page jumped to its new layout")
+        // And they are genuinely between two places, not sitting at the destination.
+        XCTAssertGreaterThan(stack.glideDistanceForTests, 1,
+                             "the components were already home, so they jumped there")
+        held = false
+    }
+
+    /// And they arrive: a glide that stalls leaves the page subtly wrong for good.
+    func testComponentsArriveWhereTheLayoutPutThem() throws {
+        let (view, window) = try pane(width: 900)
+        let stack = view.stackView
+
+        held = true
+        resize(window, view, to: 460, settling: 0)
+        held = false
+        XCTAssertTrue(waitUntil { !stack.isGlidingForTests && stack.columnWidth < 500 },
+                      "something never finished moving")
+
+        let component = try XCTUnwrap(stack.componentIndex(atY: 40))
+        let target = try XCTUnwrap(stack.frames(ofComponent: component).first)
+        XCTAssertTrue(stack.subviews.contains { abs($0.frame.minY - target.minY) < 0.5
+                                                && abs($0.frame.minX - target.minX) < 0.5 },
+                      "no view is where the layout put this component")
+    }
+
+    /// The size is not interpolated: the text wraps once, at the measure it is going to keep.
+    func testTheWidthIsNotInterpolated() throws {
+        let (view, window) = try pane(width: 900)
+        let stack = view.stackView
+        DocumentStackView.glideDuration = 5
+        addTeardownBlock { DocumentStackView.glideDuration = 0.14 }
+
+        held = true
+        resize(window, view, to: 460, settling: 0)
+        XCTAssertTrue(waitUntil { stack.isGlidingForTests })
+        held = false
+
+        // Every live component is already the width its new column gives it.
+        let widths = Set(stack.subviews.filter { $0.frame.width > 1 }.map { $0.frame.width })
+        XCTAssertTrue(widths.contains { abs($0 - stack.columnWidth) < 2 },
+                      "no component is at the new measure: \(widths.sorted())")
+    }
 }
