@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: swift --version
+
+      - name: Cache SwiftPM build
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}-${{ hashFiles('Sources/**/*.swift', 'Tests/**/*.swift') }}
+          restore-keys: |
+            spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}-
+            spm-${{ runner.os }}-
+
+      - name: Build
+        run: make build
+
+      - name: Test
+        run: make test
+
+      - name: Package the app
+        run: |
+          make app
+          # ditto, not zip: artifacts lose the executable bit unless the bundle
+          # is archived before upload.
+          ditto -c -k --keepParent build/Folio.app build/Folio.app.zip
+
+      - name: Upload the app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Folio-app-debug
+          path: build/Folio.app.zip
+          if-no-files-found: error
