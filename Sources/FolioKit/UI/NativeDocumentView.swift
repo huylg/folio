@@ -266,8 +266,9 @@ public final class NativeDocumentView: NSView {
     /// A column is only ever the measure wide, so the count is simply how many measures plus
     /// gutters the pane holds inside its own margins — a squeezed column is worse than unused
     /// width, because the whole point is to stop wasting the width, not to cram narrower lines
-    /// into it. The same rule caps a pinned choice: three columns asked for on a pane that
-    /// holds two gives two, not three thin ones.
+    /// into it. The same rule bounds a pinned choice: three columns asked for on a pane that
+    /// holds two gives two, not three thin ones. Nothing bounds it from above — a pane wide
+    /// enough for six columns of full measure gets six.
     ///
     /// `layout` is defaulted from the settings rather than read inside, so a test can ask about
     /// a choice without writing to the process-wide defaults every other test shares.

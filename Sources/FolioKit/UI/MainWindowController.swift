@@ -338,10 +338,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     }
 
     @objc func setColumnLayout(_ sender: Any?) {
-        guard let item = sender as? NSMenuItem,
-              let layout = AppSettings.ColumnLayout(rawValue: item.tag)
-        else { return }
-        AppSettings.shared.columnLayout = layout
+        guard let item = sender as? NSMenuItem else { return }
+        AppSettings.shared.columnLayout = AppSettings.ColumnLayout(rawValue: item.tag)
     }
 
     @objc func toggleFrontmatter(_ sender: Any?) {

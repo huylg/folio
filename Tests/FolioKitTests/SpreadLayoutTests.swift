@@ -50,7 +50,8 @@ final class SpreadLayoutTests: XCTestCase {
         func count(_ pane: CGFloat) -> Int {
             NativeDocumentView.columnCount(fitting: pane, metrics: metrics, layout: .automatic)
         }
-        for columns in 1...AppSettings.ColumnLayout.maximumColumns {
+        // Well past any count a display holds, to show nothing in here stops at a number.
+        for columns in 1...8 {
             XCTAssertEqual(count(needed(columns) + 1), columns,
                            "\(columns) columns fit and were not used")
             // One column is the floor — there is nothing narrower to fall back to.
@@ -61,13 +62,24 @@ final class SpreadLayoutTests: XCTestCase {
         XCTAssertEqual(count(paneWidth(forColumns: 1)), 1)
     }
 
-    /// Automatic stops at the cap however much width there is. Not a geometric limit — a 6000pt
-    /// pane holds ten columns at this measure — but a reading one.
-    func testAutomaticStopsAtTheCap() {
-        XCTAssertEqual(
-            NativeDocumentView.columnCount(fitting: 6000, metrics: metrics, layout: .automatic),
-            AppSettings.ColumnLayout.maximumColumns
-        )
+    /// Automatic has no ceiling: the pane is the only thing that decides.
+    ///
+    /// The count this app was capped at — three — is not special. A column is a full reading
+    /// measure whatever the count, so an ultrawide display that holds ten gets ten, and a reader
+    /// who would rather cross a narrower page pins one instead.
+    func testAutomaticIsBoundedOnlyByThePane() {
+        let step = metrics.measure + DocumentStackView.gutter
+        for pane in [3000.0, 4500.0, 6000.0] as [CGFloat] {
+            let expected = Int((pane - DocumentMetrics.minimumPadding * 2
+                                    + DocumentStackView.gutter) / step)
+            XCTAssertGreaterThan(expected, 3, "the fixture pane should exceed the old cap")
+            XCTAssertEqual(
+                NativeDocumentView.columnCount(fitting: pane, metrics: metrics,
+                                               layout: .automatic),
+                expected,
+                "a \(Int(pane))pt pane holds \(expected) columns at this measure"
+            )
+        }
     }
 
     /// A pinned count is a ceiling, not a promise: it is honoured when the width is there and
@@ -76,12 +88,15 @@ final class SpreadLayoutTests: XCTestCase {
         func count(_ pane: CGFloat, _ layout: AppSettings.ColumnLayout) -> Int {
             NativeDocumentView.columnCount(fitting: pane, metrics: metrics, layout: layout)
         }
-        XCTAssertEqual(count(6000, .one), 1, "one column asked for, more than one given")
-        XCTAssertEqual(count(6000, .two), 2)
-        XCTAssertEqual(count(6000, .three), 3)
+        // A pane that holds far more than any of these still gives exactly what was asked for.
+        for pinned in 1...6 {
+            XCTAssertEqual(count(6000, .fixed(pinned)), pinned,
+                           "\(pinned) columns asked for, another number given")
+        }
         // Pinned wider than the pane: two is what fits, so two is what it gets.
         XCTAssertEqual(count(paneWidth(forColumns: 2), .three), 2)
         XCTAssertEqual(count(paneWidth(forColumns: 1), .three), 1)
+        XCTAssertEqual(count(paneWidth(forColumns: 3), .fixed(6)), 3)
     }
 
     /// The `spreadLayout` Bool this setting replaced, read through rather than rewritten.
@@ -112,6 +127,9 @@ final class SpreadLayoutTests: XCTestCase {
     /// A pane wide enough for three uses three. The packing pass was always written for any
     /// number of columns; until the cap was lifted only two of them were ever asked for.
     func testVeryWidePaneUsesThreeColumns() throws { try assertPaneUses(columns: 3) }
+
+    /// And four on an ultrawide, which is the point of there being no cap.
+    func testUltrawidePaneUsesFourColumns() throws { try assertPaneUses(columns: 4) }
 
     private func assertPaneUses(columns: Int) throws {
         let view = try pane(width: paneWidth(forColumns: columns))

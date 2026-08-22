@@ -165,10 +165,11 @@ private final class AppearancePane: SettingsPane {
         width.widthAnchor.constraint(equalToConstant: 230).isActive = true
         addRow("Line width:", width)
 
-        // Columns. "Auto" takes as many as fit at the measure, up to three; a number pins it,
-        // and is still capped by what the window can actually hold at that measure.
-        let columns = NSSegmentedControl(labels: ["Auto", "1", "2", "3"], trackingMode: .selectOne, target: self, action: #selector(columnsChanged(_:)))
-        columns.selectedSegment = AppSettings.ColumnLayout.allCases.firstIndex(of: s.columnLayout) ?? 0
+        // Columns. "Auto" takes as many as fit at the measure, however many that is; a number
+        // pins it, and is still bounded by what the window can hold at that measure.
+        let choices = AppSettings.ColumnLayout.offered
+        let columns = NSSegmentedControl(labels: choices.map { $0.isAutomatic ? "Auto" : "\($0.rawValue)" }, trackingMode: .selectOne, target: self, action: #selector(columnsChanged(_:)))
+        columns.selectedSegment = choices.firstIndex(of: s.columnLayout) ?? 0
         columns.widthAnchor.constraint(equalToConstant: 230).isActive = true
         addRow("Columns:", columns)
 
@@ -200,7 +201,8 @@ private final class AppearancePane: SettingsPane {
         AppSettings.shared.lineWidth = AppSettings.LineWidth.allCases[sender.selectedSegment]
     }
     @objc private func columnsChanged(_ sender: NSSegmentedControl) {
-        AppSettings.shared.columnLayout = AppSettings.ColumnLayout.allCases[sender.selectedSegment]
+        AppSettings.shared.columnLayout =
+            AppSettings.ColumnLayout.offered[sender.selectedSegment]
     }
     @objc private func densityChanged(_ sender: NSSegmentedControl) {
         AppSettings.shared.density = AppSettings.Density.allCases[sender.selectedSegment]

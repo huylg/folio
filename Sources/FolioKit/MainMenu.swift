@@ -80,7 +80,7 @@ enum MainMenuBuilder {
         // Columns. A submenu of choices rather than a toggle: the count is decided by width,
         // but a reader on a wide screen may still prefer two roomy columns to three.
         let columns = NSMenu(title: "Columns")
-        for layout in AppSettings.ColumnLayout.allCases {
+        for layout in AppSettings.ColumnLayout.offered {
             let title: String
             switch layout {
             case .automatic: title = "Automatic"
