@@ -90,3 +90,15 @@ make test
 They run against real `NSWindow`s and assert on real geometry — where a component landed, how wide a
 column came out, what the outline reported, what a colour measures against its background. Several
 exist because a specific thing looked wrong once and the comment above them says what it was.
+
+## Continuous integration
+
+Two GitHub Actions workflows, both on `macos-15`:
+
+- `ci.yml` builds and runs the suite on every push to `main` and every pull request, then attaches
+  the debug `Folio.app` to the run as an artifact.
+- `release.yml` fires on a `v*` tag: it runs the tests, builds `make app CONFIG=release`, and
+  publishes `Folio-<tag>.zip` on a GitHub release with generated notes.
+
+The bundle is signed ad hoc, so a downloaded build is quarantined until it is opened once from the
+Finder's context menu.

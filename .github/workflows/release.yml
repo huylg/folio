@@ -1,0 +1,55 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to release (must already exist)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Show toolchain
+        run: swift --version
+
+      - name: Test
+        run: make test
+
+      - name: Build the release app
+        run: make app CONFIG=release
+
+      - name: Archive the app
+        id: archive
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          name="Folio-$tag.zip"
+          ditto -c -k --keepParent build/Folio.app "$name"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "asset=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ steps.archive.outputs.tag }}"
+          asset="${{ steps.archive.outputs.asset }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$asset" --clobber
+          else
+            gh release create "$tag" "$asset" \
+              --title "Folio $tag" \
+              --generate-notes
+          fi
