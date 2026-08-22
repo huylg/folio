@@ -38,7 +38,7 @@ final class ScrollingTests: XCTestCase {
     private func makeReadingPane() throws -> NativeDocumentView {
         let view = NativeDocumentView(metrics: metrics)
         view.frame = NSRect(x: 0, y: 0, width: 900, height: 600)
-        let window = NSWindow(contentRect: view.frame, styleMask: [.titled],
+        let window = TestWindow(contentRect: view.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = view
         window.orderBack(nil)
@@ -107,7 +107,7 @@ final class HeadingTrackingTests: XCTestCase {
                                       lineWidth: .comfortable, density: .airy)
         let view = NativeDocumentView(metrics: metrics)
         view.frame = NSRect(x: 0, y: 0, width: 900, height: 600)
-        let window = NSWindow(contentRect: view.frame, styleMask: [.titled],
+        let window = TestWindow(contentRect: view.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = view
         window.orderBack(nil)

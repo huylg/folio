@@ -38,7 +38,7 @@ final class LargeDocumentTests: XCTestCase {
     private func pane(width: CGFloat = 1500) throws -> (NativeDocumentView, NSWindow) {
         let view = NativeDocumentView(metrics: metrics)
         view.frame = NSRect(x: 0, y: 0, width: width, height: 800)
-        let window = NSWindow(contentRect: view.frame, styleMask: [.titled, .resizable],
+        let window = TestWindow(contentRect: view.frame, styleMask: [.titled, .resizable],
                               backing: .buffered, defer: false)
         window.contentView = view
         window.orderBack(nil)

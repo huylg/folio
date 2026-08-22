@@ -29,7 +29,7 @@ final class VisibleSectionsTests: XCTestCase {
         let view = NativeDocumentView(metrics: metrics)
         view.animatesNavigation = false
         view.frame = NSRect(x: 0, y: 0, width: width, height: 700)
-        let window = NSWindow(contentRect: view.frame, styleMask: [.titled],
+        let window = TestWindow(contentRect: view.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = view
         window.orderBack(nil)
@@ -144,7 +144,7 @@ final class VisibleSectionsTests: XCTestCase {
         let document = try self.document()
         let outline = OutlineViewController()
         outline.view.frame = NSRect(x: 0, y: 0, width: 230, height: 500)
-        let window = NSWindow(contentRect: outline.view.frame, styleMask: [.titled],
+        let window = TestWindow(contentRect: outline.view.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = outline.view
         window.orderBack(nil)
@@ -186,7 +186,7 @@ final class VisibleSectionsTests: XCTestCase {
     func testTheBlockFollowsTheSidebarsWidth() throws {
         let (outline, document) = (OutlineViewController(), try document())
         outline.view.frame = NSRect(x: 0, y: 0, width: 260, height: 600)
-        let window = NSWindow(contentRect: outline.view.frame, styleMask: [.titled],
+        let window = TestWindow(contentRect: outline.view.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = outline.view
         window.orderBack(nil)
@@ -227,7 +227,7 @@ final class VisibleSectionsTests: XCTestCase {
     func testTheBlockSlidesWhenScrollingMovesIt() throws {
         let (outline, document) = (OutlineViewController(), try document())
         outline.view.frame = NSRect(x: 0, y: 0, width: 280, height: 600)
-        let window = NSWindow(contentRect: outline.view.frame, styleMask: [.titled],
+        let window = TestWindow(contentRect: outline.view.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = outline.view
         window.orderBack(nil)
@@ -259,7 +259,7 @@ final class VisibleSectionsTests: XCTestCase {
     func testTheBlockFadesInAndOut() throws {
         let (outline, document) = (OutlineViewController(), try document())
         outline.view.frame = NSRect(x: 0, y: 0, width: 280, height: 600)
-        let window = NSWindow(contentRect: outline.view.frame, styleMask: [.titled],
+        let window = TestWindow(contentRect: outline.view.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = outline.view
         window.orderBack(nil)

@@ -333,7 +333,12 @@ public final class NativeDocumentView: NSView {
     /// Long enough to coalesce an animation — a sidebar toggle is a couple of hundred milliseconds
     /// of width changes at display rate — and short enough that a settled window reflows before
     /// the reader notices the columns are the wrong width.
-    private static let reflowSettleDelay: TimeInterval = 0.05
+    ///
+    /// A test that drives an animation frame by frame widens it: a frame costs whatever the machine
+    /// charges for it, and 50ms of grace that holds on a developer's desk is gone by the second
+    /// frame on a CI runner, which reflows mid-animation and fails the test for the machine's
+    /// speed rather than for the coalescing.
+    static var reflowSettleDelay: TimeInterval = 0.05
 
     /// True while AppKit is resizing the pane live — the window's own edge, or a zoom.
     private var isLiveResizing = false

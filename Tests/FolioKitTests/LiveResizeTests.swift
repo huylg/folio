@@ -28,6 +28,7 @@ final class LiveResizeTests: XCTestCase {
 
     override func tearDown() {
         NativeDocumentView.isDragging = { NSEvent.pressedMouseButtons & 1 != 0 }
+        NativeDocumentView.reflowSettleDelay = 0.05
         super.tearDown()
     }
 
@@ -41,7 +42,7 @@ final class LiveResizeTests: XCTestCase {
         let view = NativeDocumentView(metrics: metrics)
         view.animatesNavigation = false
         view.frame = NSRect(x: 0, y: 0, width: width, height: 700)
-        let window = NSWindow(contentRect: view.frame, styleMask: [.titled, .resizable],
+        let window = TestWindow(contentRect: view.frame, styleMask: [.titled, .resizable],
                               backing: .buffered, defer: false)
         window.contentView = view
         window.orderBack(nil)
@@ -115,6 +116,13 @@ final class LiveResizeTests: XCTestCase {
 
     /// An animation is not a hand either: it gets one reflow, once it has settled.
     func testAnAnimationIsCoalescedIntoOneReflow() throws {
+        // The frames have to land inside one settle window for the coalescing to be what is under
+        // test. A frame costs what the machine charges, and on a slow one the default 50ms is over
+        // before the second frame — the reflow that follows is the clock's doing, not the pane's.
+        // A CI runner's frame measured around 55ms, so half a second leaves room to spare and
+        // still lands the reflow well inside `waitUntil`.
+        NativeDocumentView.reflowSettleDelay = 0.5
+
         let (view, window) = try pane(width: 900)
         let before = view.stackView.columnWidth
 

@@ -25,7 +25,7 @@ final class ReadingPositionTests: XCTestCase {
         let view = NativeDocumentView(metrics: metrics)
         view.animatesNavigation = false
         view.frame = NSRect(x: 0, y: 0, width: width, height: 700)
-        let window = NSWindow(contentRect: view.frame, styleMask: [.titled, .resizable],
+        let window = TestWindow(contentRect: view.frame, styleMask: [.titled, .resizable],
                               backing: .buffered, defer: false)
         window.contentView = view
         window.orderBack(nil)
