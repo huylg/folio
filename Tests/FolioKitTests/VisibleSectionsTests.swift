@@ -50,7 +50,7 @@ final class VisibleSectionsTests: XCTestCase {
     }
 
     func testAGridSpreadReportsSeveralSections() throws {
-        let (view, _) = try pane(width: 1500)
+        let (view, _) = try pane(width: paneWidth(forColumns: 2, metrics: metrics))
         XCTAssertEqual(view.stackView.columnCount, 2)
 
         var visible: Set<Int> = []
@@ -72,7 +72,7 @@ final class VisibleSectionsTests: XCTestCase {
     /// of the right-hand column while the bottom of the left column and the next page's top are
     /// both on screen — so the group legitimately has a gap.
     func testTheVisibleGroupIsContiguousInASingleColumn() throws {
-        let (view, _) = try pane(width: 900)
+        let (view, _) = try pane(width: paneWidth(forColumns: 1, metrics: metrics))
         XCTAssertEqual(view.stackView.columnCount, 1)
         var visible: Set<Int> = []
         view.onVisibleSectionsChange = { visible = $0 }
@@ -88,7 +88,7 @@ final class VisibleSectionsTests: XCTestCase {
 
     /// Whatever is reported, every section in the group really does have content on screen.
     func testEverySectionInTheGroupIsOnScreen() throws {
-        let (view, document) = try pane(width: 1500)
+        let (view, document) = try pane(width: paneWidth(forColumns: 2, metrics: metrics))
         var visible: Set<Int> = []
         view.onVisibleSectionsChange = { visible = $0 }
 
@@ -117,7 +117,7 @@ final class VisibleSectionsTests: XCTestCase {
 
     /// It follows the reader.
     func testTheGroupAdvancesWithScrolling() throws {
-        let (view, _) = try pane(width: 1500)
+        let (view, _) = try pane(width: paneWidth(forColumns: 2, metrics: metrics))
         var visible: Set<Int> = []
         view.onVisibleSectionsChange = { visible = $0 }
 
@@ -131,7 +131,7 @@ final class VisibleSectionsTests: XCTestCase {
 
     /// A single column shows several sections too, and gets the same treatment.
     func testSingleColumnAlsoReportsGroups() throws {
-        let (view, _) = try pane(width: 900)
+        let (view, _) = try pane(width: paneWidth(forColumns: 1, metrics: metrics))
         XCTAssertEqual(view.stackView.columnCount, 1)
         var visible: Set<Int> = []
         view.onVisibleSectionsChange = { visible = $0 }

@@ -25,10 +25,11 @@ public final class DocumentStackView: NSView {
 
     /// How many columns the document is laid out in.
     ///
-    /// Two columns turn the page into a spread: components fill the left column, then the right,
-    /// then the next spread below. That is pagination — the only way two pages fit one screen —
-    /// but the spreads stack vertically, so scrolling is still scrolling and every position, from
-    /// an outline click to a restored anchor, keeps working.
+    /// More than one turns the page into a spread: components fill the first column, then the
+    /// next, then the first column of the spread below. That is pagination — the only way several
+    /// pages fit one screen — but the spreads stack vertically, so scrolling is still scrolling
+    /// and every position, from an outline click to a restored anchor, keeps working. Nothing
+    /// here is written for two in particular; the count comes from the pane's width.
     public var columnCount: Int = 1 {
         didSet { if columnCount != oldValue { invalidateMeasurement() } }
     }
@@ -73,7 +74,7 @@ public final class DocumentStackView: NSView {
 
     /// Where a section picks up again, when a page could not hold all of it.
     ///
-    /// Only page breaks are recorded. Both columns of a page are on screen together, so a section
+    /// Only page breaks are recorded. Every column of a page is on screen together, so a section
     /// crossing between them needs no telling; a section crossing to the *next* page does.
     public enum Continuation {
         case nextPage
@@ -337,8 +338,8 @@ public final class DocumentStackView: NSView {
                 if row == measured.rows.count { return }
             }
 
-            // Anything else that will not fit takes a page of its own across both columns.
-            // Keeping it in one column left the other empty and the reader staring at a table
+            // Anything else that will not fit takes a page of its own across every column.
+            // Keeping it in one column left the others empty and the reader staring at a table
             // running off the bottom beside a blank half-page — and for a wide table or a diagram
             // the full width is where it wanted to be anyway, which often makes it shorter.
             if used[column] > 0 { advance() }
@@ -464,7 +465,7 @@ public final class DocumentStackView: NSView {
         return spreadOfPlacement[firstPlacement[index]]
     }
 
-    /// A spread's rect, covering both its columns.
+    /// A spread's rect, covering all of its columns.
     public func spreadFrame(at index: Int) -> NSRect {
         guard spreadTops.indices.contains(index), spreadHeights.indices.contains(index)
         else { return .zero }
@@ -594,8 +595,8 @@ public final class DocumentStackView: NSView {
 
     /// Where the viewport's top edge should sit to bring a component into view.
     ///
-    /// In a spread, that is the spread's own top: aligning on a component in the right-hand
-    /// column would cut both columns in half and break the reading order.
+    /// In a spread, that is the spread's own top: aligning on a component in a later column
+    /// would cut every column in half and break the reading order.
     public func alignmentY(forComponent index: Int) -> CGFloat {
         guard columnCount > 1, firstPlacement.indices.contains(index) else {
             return frame(ofComponent: index).minY
@@ -616,13 +617,13 @@ public final class DocumentStackView: NSView {
             return result ?? 0
         }
 
-        // A spread has no single reading position: both columns are on screen at once, and they
+        // A spread has no single reading position: every column is on screen at once, and they
         // share the same y range, so a probe cannot say which of them the reader is in.
         //
         // What it *can* say is how far the spread has travelled — and a spread is a screenful, so
         // the reader crosses its whole reading order in that distance. Position is therefore
-        // taken as a fraction of the spread's reading order. Restricting the probe to the left
-        // column instead, as this did, meant a heading in the right-hand column only became
+        // taken as a fraction of the spread's reading order. Restricting the probe to the first
+        // column instead, as this did, meant a heading in a later column only became
         // current once the *next* spread arrived: the outline lagged a page behind the page.
         let spread = spreadTops.lastIndex { $0 <= y } ?? 0
         let placements = frames.indices.filter { spreadOfPlacement[$0] == spread }

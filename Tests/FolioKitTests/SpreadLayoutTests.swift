@@ -39,62 +39,142 @@ final class SpreadLayoutTests: XCTestCase {
         return view
     }
 
-    /// A spread needs two full measures plus the gutter and the page margins; anything less keeps
-    /// one column, because cramming two narrow columns in is worse than leaving the width unused.
+    /// A column needs a full measure plus its gutter inside the page margins; anything less keeps
+    /// the count it had, because cramming narrower columns in is worse than leaving width unused.
     func testColumnCountFollowsTheAvailableWidth() {
-        let needed = metrics.measure * 2 + DocumentStackView.gutter
-            + DocumentMetrics.minimumPadding * 2
-        XCTAssertEqual(NativeDocumentView.columnCount(fitting: needed + 1, metrics: metrics), 2)
-        XCTAssertEqual(NativeDocumentView.columnCount(fitting: needed - 1, metrics: metrics), 1)
-        XCTAssertEqual(NativeDocumentView.columnCount(fitting: 900, metrics: metrics), 1)
+        func needed(_ columns: Int) -> CGFloat {
+            metrics.measure * CGFloat(columns)
+                + DocumentStackView.gutter * CGFloat(columns - 1)
+                + DocumentMetrics.minimumPadding * 2
+        }
+        func count(_ pane: CGFloat) -> Int {
+            NativeDocumentView.columnCount(fitting: pane, metrics: metrics, layout: .automatic)
+        }
+        for columns in 1...AppSettings.ColumnLayout.maximumColumns {
+            XCTAssertEqual(count(needed(columns) + 1), columns,
+                           "\(columns) columns fit and were not used")
+            // One column is the floor — there is nothing narrower to fall back to.
+            guard columns > 1 else { continue }
+            XCTAssertEqual(count(needed(columns) - 1), columns - 1,
+                           "\(columns) columns were squeezed into a pane that holds \(columns - 1)")
+        }
+        XCTAssertEqual(count(paneWidth(forColumns: 1)), 1)
     }
 
-    func testWidePaneUsesTwoColumns() throws {
-        let view = try pane(width: 1600)
-        XCTAssertEqual(view.stackView.columnCount, 2)
+    /// Automatic stops at the cap however much width there is. Not a geometric limit — a 6000pt
+    /// pane holds ten columns at this measure — but a reading one.
+    func testAutomaticStopsAtTheCap() {
+        XCTAssertEqual(
+            NativeDocumentView.columnCount(fitting: 6000, metrics: metrics, layout: .automatic),
+            AppSettings.ColumnLayout.maximumColumns
+        )
+    }
+
+    /// A pinned count is a ceiling, not a promise: it is honoured when the width is there and
+    /// clamped to what fits when it is not, because a column is only ever the measure wide.
+    func testAPinnedCountIsHonouredAndClamped() {
+        func count(_ pane: CGFloat, _ layout: AppSettings.ColumnLayout) -> Int {
+            NativeDocumentView.columnCount(fitting: pane, metrics: metrics, layout: layout)
+        }
+        XCTAssertEqual(count(6000, .one), 1, "one column asked for, more than one given")
+        XCTAssertEqual(count(6000, .two), 2)
+        XCTAssertEqual(count(6000, .three), 3)
+        // Pinned wider than the pane: two is what fits, so two is what it gets.
+        XCTAssertEqual(count(paneWidth(forColumns: 2), .three), 2)
+        XCTAssertEqual(count(paneWidth(forColumns: 1), .three), 1)
+    }
+
+    /// The `spreadLayout` Bool this setting replaced, read through rather than rewritten.
+    func testTheLegacySpreadLayoutBoolMigrates() throws {
+        let suite = "folio-tests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        addTeardownBlock { UserDefaults.standard.removePersistentDomain(forName: suite) }
+
+        XCTAssertEqual(AppSettings(defaults: defaults).columnLayout, .automatic,
+                       "a reader with neither key should get automatic")
+
+        defaults.set(false, forKey: "spreadLayout")
+        XCTAssertEqual(AppSettings(defaults: defaults).columnLayout, .one,
+                       "the spread turned off meant one column")
+
+        defaults.set(true, forKey: "spreadLayout")
+        XCTAssertEqual(AppSettings(defaults: defaults).columnLayout, .automatic,
+                       "the spread left on meant as many columns as fit")
+
+        // An explicit choice outranks the Bool it replaced.
+        defaults.set(AppSettings.ColumnLayout.two.rawValue, forKey: "columnLayout")
+        defaults.set(false, forKey: "spreadLayout")
+        XCTAssertEqual(AppSettings(defaults: defaults).columnLayout, .two)
+    }
+
+    func testWidePaneUsesTwoColumns() throws { try assertPaneUses(columns: 2) }
+
+    /// A pane wide enough for three uses three. The packing pass was always written for any
+    /// number of columns; until the cap was lifted only two of them were ever asked for.
+    func testVeryWidePaneUsesThreeColumns() throws { try assertPaneUses(columns: 3) }
+
+    private func assertPaneUses(columns: Int) throws {
+        let view = try pane(width: paneWidth(forColumns: columns))
+        XCTAssertEqual(view.stackView.columnCount, columns)
 
         let built = try XCTUnwrap(view.built)
-        let frames = built.components.indices.map { view.stackView.frame(ofComponent: $0) }
-        let columns = Set(frames.map { Int($0.minX) })
-        XCTAssertEqual(columns.count, 2, "components did not land in two distinct columns")
+        let stack = view.stackView
+        let frames = built.components.indices.map { stack.frame(ofComponent: $0) }
+        let edges = Set(frames.map { Int($0.minX) })
+        XCTAssertEqual(edges.count, columns,
+                       "components did not land in \(columns) distinct columns")
 
-        // Every component is a column wide — not the whole pane.
-        for frame in frames {
-            XCTAssertEqual(frame.width, metrics.measure, accuracy: 1)
+        // Every component is a column wide — not the whole pane. A block too tall for a column
+        // is the exception: it takes a page of its own across all of them.
+        let spread = metrics.measure * CGFloat(columns)
+            + DocumentStackView.gutter * CGFloat(columns - 1)
+        for index in built.components.indices {
+            let expected = stack.spans(component: index) ? spread : metrics.measure
+            XCTAssertEqual(frames[index].width, expected, accuracy: 1,
+                           "component \(index) is neither a column nor a spread wide")
         }
     }
 
-    /// Reading order is preserved: the left column of a spread holds the earlier components.
+    /// Reading order is preserved: an earlier column of a page holds the earlier components.
     func testReadingOrderRunsDownThenAcross() throws {
-        let view = try pane(width: 1600, height: 600)
+        try assertReadingOrderRunsDownThenAcross(columns: 2)
+    }
+
+    func testReadingOrderRunsDownThenAcrossThreeColumns() throws {
+        try assertReadingOrderRunsDownThenAcross(columns: 3)
+    }
+
+    private func assertReadingOrderRunsDownThenAcross(columns: Int) throws {
+        let view = try pane(width: paneWidth(forColumns: columns), height: 600)
+        XCTAssertEqual(view.stackView.columnCount, columns)
         let built = try XCTUnwrap(view.built)
         let stack = view.stackView
 
-        let lefts = built.components.indices.filter {
-            stack.frame(ofComponent: $0).minX < stack.bounds.midX
+        // Which column a component is in, taken from the distinct left edges in order — the
+        // invariant holds for any number of them, where a midpoint test only worked for two.
+        let edges = Set(built.components.indices.map {
+            Int(stack.frame(ofComponent: $0).minX)
+        }).sorted()
+        XCTAssertEqual(edges.count, columns, "components did not fill every column")
+        func column(_ index: Int) -> Int {
+            edges.firstIndex(of: Int(stack.frame(ofComponent: index).minX)) ?? 0
         }
-        let rights = built.components.indices.filter {
-            stack.frame(ofComponent: $0).minX >= stack.bounds.midX
-        }
-        XCTAssertFalse(lefts.isEmpty)
-        XCTAssertFalse(rights.isEmpty)
-        // Within one spread every left-column component comes before every right-column one.
-        for right in rights {
-            let spreadTop = stack.alignmentY(forComponent: right)
-            let sameSpreadLefts = lefts.filter {
-                abs(stack.alignmentY(forComponent: $0) - spreadTop) < 1
-            }
-            for left in sameSpreadLefts {
-                XCTAssertLessThan(left, right,
-                                  "component \(right) in the right column precedes \(left) "
-                                      + "in the left column of the same spread")
+
+        // Within one page the column never runs backwards as the document goes on.
+        for earlier in built.components.indices {
+            for later in built.components.indices where later > earlier {
+                guard abs(stack.alignmentY(forComponent: earlier)
+                            - stack.alignmentY(forComponent: later)) < 1 else { continue }
+                XCTAssertLessThanOrEqual(column(earlier), column(later),
+                                         "component \(later) sits in a column left of \(earlier) "
+                                             + "on the same page")
             }
         }
     }
 
     /// Components in the same column never overlap.
     func testColumnsDoNotOverlap() throws {
-        let view = try pane(width: 1600, height: 600)
+        let view = try pane(width: paneWidth(forColumns: 2), height: 600)
         let built = try XCTUnwrap(view.built)
         let stack = view.stackView
 
@@ -113,7 +193,7 @@ final class SpreadLayoutTests: XCTestCase {
     /// Navigation aligns on the spread, not on the component: aligning mid-column would cut both
     /// columns in half.
     func testNavigationAlignsOnSpreads() throws {
-        let view = try pane(width: 1600, height: 600)
+        let view = try pane(width: paneWidth(forColumns: 2), height: 600)
         let built = try XCTUnwrap(view.built)
         let stack = view.stackView
 
@@ -129,7 +209,7 @@ final class SpreadLayoutTests: XCTestCase {
 
     /// A narrow pane keeps the single-column layout, unchanged.
     func testNarrowPaneIsUnchanged() throws {
-        let view = try pane(width: 900)
+        let view = try pane(width: paneWidth(forColumns: 1))
         XCTAssertEqual(view.stackView.columnCount, 1)
         let built = try XCTUnwrap(view.built)
         for index in 1..<built.components.count {
@@ -150,7 +230,7 @@ extension SpreadLayoutTests {
 
     /// Every component sits inside the page that is drawn around it.
     func testPagesEncloseTheirComponents() throws {
-        let view = try pane(width: 1600, height: 600)
+        let view = try pane(width: paneWidth(forColumns: 2), height: 600)
         let stack = view.stackView
         let built = try XCTUnwrap(view.built)
         XCTAssertGreaterThan(stack.spreadCount, 1, "the fixture should span several pages")
@@ -169,7 +249,7 @@ extension SpreadLayoutTests {
 
     /// Pages are ordered, do not overlap, and leave the gutter between them.
     func testPagesAreOrderedAndSeparated() throws {
-        let view = try pane(width: 1600, height: 600)
+        let view = try pane(width: paneWidth(forColumns: 2), height: 600)
         let stack = view.stackView
         for index in 1..<stack.spreadCount {
             let previous = stack.spreadFrame(at: index - 1)
@@ -183,14 +263,14 @@ extension SpreadLayoutTests {
 
     /// A single column is not paginated, so it gets no page furniture to explain.
     func testSingleColumnHasOnePage() throws {
-        let view = try pane(width: 900)
+        let view = try pane(width: paneWidth(forColumns: 1))
         XCTAssertEqual(view.stackView.columnCount, 1)
         XCTAssertEqual(view.stackView.spreadCount, 1)
     }
 
     /// Drawing is exercised, since it reaches for spread geometry that must exist for every index.
     func testDrawingThePagesIsSafe() throws {
-        let view = try pane(width: 1600, height: 600)
+        let view = try pane(width: paneWidth(forColumns: 2), height: 600)
         let stack = view.stackView
         let region = NSRect(x: 0, y: 0, width: stack.frame.width,
                             height: min(2000, stack.frame.height))
@@ -221,7 +301,7 @@ extension SpreadLayoutTests {
 
     private func paneWithLongTable() throws -> (NativeDocumentView, Int) {
         let view = NativeDocumentView(metrics: metrics)
-        view.frame = NSRect(x: 0, y: 0, width: 1600, height: 700)
+        view.frame = NSRect(x: 0, y: 0, width: paneWidth(forColumns: 2), height: 700)
         let window = TestWindow(contentRect: view.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = view
@@ -303,9 +383,19 @@ extension SpreadLayoutTests {
         }
     }
 
-    /// A component that cannot be split takes a page of its own, across both columns, rather than
-    /// leaving one column empty.
+    /// A component that cannot be split takes a page of its own, across every column, rather than
+    /// leaving the others empty.
     func testUnsplittableTallComponentSpansThePage() throws {
+        try assertTallComponentSpansThePage(columns: 2)
+    }
+
+    /// And it spans all three when there are three: a spanning block *is* the page, and the extra
+    /// width is often what makes it shorter.
+    func testUnsplittableTallComponentSpansAThreeColumnPage() throws {
+        try assertTallComponentSpansThePage(columns: 3)
+    }
+
+    private func assertTallComponentSpansThePage(columns: Int) throws {
         var lines = ["# Long code", ""]
         lines += ["```python"]
         for index in 1...200 { lines.append("value_\(index) = compute(\(index))") }
@@ -316,7 +406,7 @@ extension SpreadLayoutTests {
         addTeardownBlock { try? FileManager.default.removeItem(at: url) }
 
         let view = NativeDocumentView(metrics: metrics)
-        view.frame = NSRect(x: 0, y: 0, width: 1600, height: 700)
+        view.frame = NSRect(x: 0, y: 0, width: paneWidth(forColumns: columns), height: 700)
         let window = TestWindow(contentRect: view.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = view
@@ -328,20 +418,22 @@ extension SpreadLayoutTests {
         }
 
         let stack = view.stackView
+        XCTAssertEqual(stack.columnCount, columns)
         let code = try XCTUnwrap(view.built?.components.firstIndex {
             if case .code = $0.content { return true } else { return false }
         })
         XCTAssertTrue(stack.spans(component: code), "the tall card did not take a page of its own")
-        let frame = stack.frame(ofComponent: code)
         let column = stack.frame(ofComponent: 0).width
-        XCTAssertGreaterThan(frame.width, column * 1.5,
-                             "a spanning component should be wider than one column")
+        XCTAssertEqual(stack.frame(ofComponent: code).width,
+                       column * CGFloat(columns) + DocumentStackView.gutter * CGFloat(columns - 1),
+                       accuracy: 1,
+                       "a spanning component should be the whole page wide")
     }
 
     /// A single column is not paginated, so nothing is split there.
     func testSingleColumnDoesNotSplitTables() throws {
         let view = NativeDocumentView(metrics: metrics)
-        view.frame = NSRect(x: 0, y: 0, width: 900, height: 700)
+        view.frame = NSRect(x: 0, y: 0, width: paneWidth(forColumns: 1), height: 700)
         let window = TestWindow(contentRect: view.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = view
@@ -367,7 +459,7 @@ extension SpreadLayoutTests {
 /// different rows: clipped at the bottom, or trailing a band of empty space.
 extension SpreadLayoutTests {
 
-    private func paneWithTableRows(_ rows: Int, width: CGFloat = 1600,
+    private func paneWithTableRows(_ rows: Int, width: CGFloat = paneWidth(forColumns: 2),
                                    height: CGFloat = 900) throws -> NativeDocumentView {
         var lines = ["# Contents", "", "An introductory paragraph before the table.", "",
                      "| Chapter | Page |", "| --- | --- |"]
@@ -441,7 +533,7 @@ extension SpreadLayoutTests {
 extension SpreadLayoutTests {
 
     func testPageBreaksSitBetweenPages() throws {
-        let view = try pane(width: 1600, height: 600)
+        let view = try pane(width: paneWidth(forColumns: 2), height: 600)
         let stack = view.stackView
         XCTAssertGreaterThan(stack.spreadCount, 1, "the fixture should span several pages")
         XCTAssertNil(stack.pageBreakY(after: stack.spreadCount - 1),
@@ -461,7 +553,7 @@ extension SpreadLayoutTests {
 
     /// A single column is not paginated, so there is nothing to divide.
     func testSingleColumnHasNoPageBreaks() throws {
-        let view = try pane(width: 900)
+        let view = try pane(width: paneWidth(forColumns: 1))
         XCTAssertEqual(view.stackView.columnCount, 1)
         XCTAssertNil(view.stackView.pageBreakY(after: 0))
     }
@@ -503,7 +595,7 @@ extension SpreadLayoutTests {
     }
 
     func testAPageThatCarriesOnIsMarked() throws {
-        let view = try paneShowing(try longSectionDocument(), width: 1500)
+        let view = try paneShowing(try longSectionDocument(), width: paneWidth(forColumns: 2))
         let stack = view.stackView
         XCTAssertEqual(stack.columnCount, 2)
         XCTAssertGreaterThan(stack.spreadCount, 1, "the fixture should span several pages")
@@ -524,7 +616,7 @@ extension SpreadLayoutTests {
     /// A page whose last section ends on it is not marked: the marker means "there is more of
     /// this", and a completed section has none.
     func testAPageThatEndsItsSectionIsNotMarked() throws {
-        let view = try pane(width: 1600, height: 700)
+        let view = try pane(width: paneWidth(forColumns: 2), height: 700)
         for spread in 0..<view.stackView.spreadCount {
             XCTAssertFalse(view.stackView.chapterContinues(afterSpread: spread),
                            "page \(spread) ends its sections but was marked as continuing")
@@ -534,7 +626,7 @@ extension SpreadLayoutTests {
     /// A single column is one continuous flow: there are no pages, so nothing is ever carried on
     /// to one.
     func testSingleColumnHasNoContinuationMarks() throws {
-        let view = try paneShowing(try longSectionDocument(), width: 900)
+        let view = try paneShowing(try longSectionDocument(), width: paneWidth(forColumns: 1))
         XCTAssertEqual(view.stackView.columnCount, 1)
         XCTAssertTrue(view.stackView.continuationMarks().isEmpty)
         XCTAssertFalse(view.stackView.chapterContinues(afterSpread: 0))

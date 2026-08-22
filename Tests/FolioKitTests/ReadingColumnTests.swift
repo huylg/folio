@@ -98,23 +98,26 @@ final class ReadingColumnTests: XCTestCase {
     }
 
     func testColumnIsConsistentAtAWideWidth() throws {
-        let view = try makeView(width: 1900)
-        assertConsistent(view, paneWidth: 1900)
-        XCTAssertEqual(view.stackView.columnCount, 2,
-                       "1900pt has room for a spread and should use it")
+        let width = paneWidth(forColumns: 3)
+        let view = try makeView(width: width)
+        assertConsistent(view, paneWidth: width)
+        XCTAssertEqual(view.stackView.columnCount, 3,
+                       "a pane with room for three columns should use them")
     }
 
     /// The failing case from the screenshot: a wide pane narrowed to roughly two thirds when the
     /// source pane opened.
     func testColumnRecalculatesWhenThePaneNarrows() throws {
-        let view = try makeView(width: 1900)
-        resize(view, to: 1330)
-        assertConsistent(view, paneWidth: 1330)
+        let view = try makeView(width: paneWidth(forColumns: 3))
+        resize(view, to: paneWidth(forColumns: 2))
+        assertConsistent(view, paneWidth: paneWidth(forColumns: 2))
     }
 
     func testColumnSurvivesRepeatedResizes() throws {
-        let view = try makeView(width: 1600)
-        for width in [900, 1600, 700, 1200, 480, 2000] as [CGFloat] {
+        let view = try makeView(width: paneWidth(forColumns: 2))
+        // Across every band, and back and forth over each threshold.
+        for width in [paneWidth(forColumns: 1), paneWidth(forColumns: 3),
+                      700, paneWidth(forColumns: 2), 480, paneWidth(forColumns: 3) + 400] {
             resize(view, to: width)
             assertConsistent(view, paneWidth: width)
         }
@@ -133,8 +136,8 @@ final class ReadingColumnTests: XCTestCase {
     /// A widget fills the column. As an attachment it took its width from the line fragment it
     /// sat in, so a broken container showed up as cards a couple of points wide.
     func testBlockWidgetsGetTheColumnWidth() throws {
-        let view = try makeView(width: 1900)
-        resize(view, to: 1330)
+        let view = try makeView(width: paneWidth(forColumns: 3))
+        resize(view, to: paneWidth(forColumns: 2))
 
         let stack = view.stackView
         let column = stack.frame(ofComponent: 0).width

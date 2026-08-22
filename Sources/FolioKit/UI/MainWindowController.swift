@@ -337,8 +337,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
     }
 
-    @objc func toggleSpreadLayout(_ sender: Any?) {
-        AppSettings.shared.spreadLayout.toggle()
+    @objc func setColumnLayout(_ sender: Any?) {
+        guard let item = sender as? NSMenuItem,
+              let layout = AppSettings.ColumnLayout(rawValue: item.tag)
+        else { return }
+        AppSettings.shared.columnLayout = layout
     }
 
     @objc func toggleFrontmatter(_ sender: Any?) {
@@ -380,8 +383,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         case #selector(toggleSidebar(_:)):
             menuItem.title = sidebarCollapsed ? "Show Sidebar" : "Hide Sidebar"
             return true
-        case #selector(toggleSpreadLayout(_:)):
-            menuItem.state = AppSettings.shared.spreadLayout ? .on : .off
+        case #selector(setColumnLayout(_:)):
+            menuItem.state = menuItem.tag == AppSettings.shared.columnLayout.rawValue
+                ? .on : .off
             return currentDocument != nil
         case #selector(toggleFrontmatter(_:)):
             menuItem.state = AppSettings.shared.showFrontmatter ? .on : .off

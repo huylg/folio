@@ -35,7 +35,12 @@ final class LargeDocumentTests: XCTestCase {
         return try MarkdownDocument(url: url)
     }
 
-    private func pane(width: CGFloat = 1500) throws -> (NativeDocumentView, NSWindow) {
+    /// The narrowest pane that holds a two-column spread. A property rather than a default
+    /// argument, which cannot read `metrics`.
+    private var spreadWidth: CGFloat { paneWidth(forColumns: 2, metrics: metrics) }
+
+    private func pane(width: CGFloat? = nil) throws -> (NativeDocumentView, NSWindow) {
+        let width = width ?? spreadWidth
         let view = NativeDocumentView(metrics: metrics)
         view.frame = NSRect(x: 0, y: 0, width: width, height: 800)
         let window = TestWindow(contentRect: view.frame, styleMask: [.titled, .resizable],
@@ -63,7 +68,7 @@ final class LargeDocumentTests: XCTestCase {
         XCTAssertGreaterThan(before, 100, "the document should have been measured once on open")
 
         view.viewWillStartLiveResize()
-        for width in stride(from: 1500.0, through: 1560.0, by: 4.0) {
+        for width in stride(from: spreadWidth, through: spreadWidth + 60, by: 4.0) {
             window.setContentSize(NSSize(width: width, height: 800))
             view.layoutSubtreeIfNeeded()
             _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.001))
@@ -80,11 +85,11 @@ final class LargeDocumentTests: XCTestCase {
     /// In a spread the column is the reading measure whatever the window's width, so a resize that
     /// keeps the column width must not measure anything again.
     func testResizeThatKeepsTheColumnWidthMeasuresNothing() throws {
-        let (view, window) = try pane(width: 1500)
+        let (view, window) = try pane(width: spreadWidth)
         XCTAssertEqual(view.stackView.columnCount, 2)
         let before = view.stackView.measuredComponents
 
-        window.setContentSize(NSSize(width: 1560, height: 800))
+        window.setContentSize(NSSize(width: spreadWidth + 60, height: 800))
         view.layoutSubtreeIfNeeded()
         settle(view)
 
@@ -130,13 +135,13 @@ final class LargeDocumentTests: XCTestCase {
 extension LargeDocumentTests {
 
     func testAnAnimatedWidthChangeReflowsOnce() throws {
-        let (view, window) = try pane(width: 1500)
+        let (view, window) = try pane(width: spreadWidth)
         let before = view.stackView.measuredComponents
         let startWidth = view.stackView.frame.width
 
         // A sidebar collapsing: the pane widens over ~15 frames.
         for step in 1...15 {
-            window.setContentSize(NSSize(width: 1500 + CGFloat(step) * 20, height: 800))
+            window.setContentSize(NSSize(width: spreadWidth + CGFloat(step) * 20, height: 800))
             view.layoutSubtreeIfNeeded()
             _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.004))
             // The stack keeps up with the pane the whole way, so the columns glide rather than

@@ -77,8 +77,24 @@ enum MainMenuBuilder {
         let fullscreen = view.addItem(withTitle: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
         fullscreen.keyEquivalentModifierMask = [.control, .command]
         view.addItem(.separator())
-        let spread = view.addItem(withTitle: "Two-Column Layout", action: #selector(MainWindowController.toggleSpreadLayout(_:)), keyEquivalent: "2")
-        spread.keyEquivalentModifierMask = [.command, .option]
+        // Columns. A submenu of choices rather than a toggle: the count is decided by width,
+        // but a reader on a wide screen may still prefer two roomy columns to three.
+        let columns = NSMenu(title: "Columns")
+        for layout in AppSettings.ColumnLayout.allCases {
+            let title: String
+            switch layout {
+            case .automatic: title = "Automatic"
+            case .one: title = "One Column"
+            default: title = "\(layout.displayName) Columns"
+            }
+            let item = columns.addItem(withTitle: title,
+                                       action: #selector(MainWindowController.setColumnLayout(_:)),
+                                       keyEquivalent: "\(layout.rawValue)")
+            item.keyEquivalentModifierMask = [.command, .option]
+            item.tag = layout.rawValue
+        }
+        let columnsItem = view.addItem(withTitle: "Columns", action: nil, keyEquivalent: "")
+        columnsItem.submenu = columns
         view.addItem(withTitle: "Show Frontmatter", action: #selector(MainWindowController.toggleFrontmatter(_:)), keyEquivalent: "")
         view.addItem(withTitle: "Render Equations", action: #selector(MainWindowController.toggleEquations(_:)), keyEquivalent: "")
         view.addItem(.separator())

@@ -3,14 +3,16 @@
 A Markdown reader for macOS, built for reading long documents rather than editing short ones.
 
 Folio is native AppKit — no web view. A document becomes a list of components, each with its own
-view and its own text selection, and the reading pane lays them out as one or two pages of a spread
-depending on how much width there is.
+view and its own text selection, and the reading pane lays them out as one, two, or three pages of
+a spread depending on how much width there is.
 
 ## What it does
 
 **Reading**
 
-- One column on a narrow window, a two-page spread on a wide one, scrolling vertically either way.
+- One column on a narrow window, and a second or a third page as the width arrives — as many as
+  fit at the reading measure, up to three, scrolling vertically whatever the count. Pin a count
+  from View › Columns if you would rather have two roomy pages than three.
 - A section stays whole where it can: a heading is not left stranded at the foot of a column.
 - Long tables paginate by row with the header repeated. Anything too big to break spans the spread.
 - A dashed accent rule marks each page boundary, with a marker where a section carries on overleaf.
@@ -22,7 +24,7 @@ depending on how much width there is.
   a single highlighted row.
 - Clicking a heading scrolls there and glows the component it landed on.
 - The reading position is the reader's own: resizing the window, toggling the sidebar, or crossing
-  between one column and two puts them back exactly where they were.
+  from one column count to another puts them back exactly where they were.
 - Wiki-style and relative links resolve against the document's folder, so a vault stays navigable.
 
 **Blocks**
