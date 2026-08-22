@@ -15,7 +15,7 @@ permissions:
 jobs:
   release:
     name: Build and publish
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,7 +23,15 @@ jobs:
           fetch-depth: 0
 
       - name: Show toolchain
-        run: swift --version
+        run: |
+          swift --version
+          xcodebuild -version
+          sdk=$(xcrun --sdk macosx --show-sdk-version)
+          echo "macOS SDK: $sdk"
+          # Liquid Glass is granted by SDK linkage, not by the deployment target: a
+          # binary built against SDK 15 keeps the pre-26 appearance even when it runs
+          # on macOS 26. Fail here rather than shipping a bundle that looks stale.
+          [ "${sdk%%.*}" -ge 26 ] || { echo "::error::need the macOS 26 SDK or newer, got $sdk"; exit 1; }
 
       - name: Test
         run: make test
