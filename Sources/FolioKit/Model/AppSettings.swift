@@ -8,7 +8,11 @@ extension Notification.Name {
 /// recents list are the only things it ever persists.
 public final class AppSettings {
     public static let shared = AppSettings()
-    private let d = UserDefaults.standard
+    private let d: UserDefaults
+
+    /// Injectable so a test can exercise a stored value — the `columnLayout` migration, say —
+    /// in a scratch suite instead of the domain every other test shares.
+    init(defaults: UserDefaults = .standard) { d = defaults }
 
     public enum ReadingFont: String, CaseIterable {
         case serif, sansSerif, monospaced
@@ -48,6 +52,54 @@ public final class AppSettings {
         /// long-form reading: "when you display text in wide columns or long passages, more
         /// space between lines can make it easier for people to keep their place."
         public var lineHeightMultiple: CGFloat { self == .airy ? 1.72 : 1.5 }
+    }
+
+    /// How many columns the reading pane may use: as many as fit, or a count the reader pinned.
+    ///
+    /// Automatic has no ceiling. A column is always a full reading measure, so the width is the
+    /// only thing that can add one — there is no point at which the app knows better than the
+    /// display in front of the reader. Anyone who finds a wide page too far to cross pins a
+    /// smaller count instead, which is what the choice is for.
+    ///
+    /// A pinned count is still a ceiling rather than a promise: three asked for on a pane that
+    /// holds two gives two, not three narrow ones.
+    ///
+    /// Stored as an `Int` — 0 for automatic, otherwise the count — so a struct rather than an
+    /// enum, which would have to name every count it allows and thereby cap it.
+    public struct ColumnLayout: Equatable {
+        /// 0 for automatic, otherwise the pinned number of columns.
+        public let rawValue: Int
+
+        public init(rawValue: Int) { self.rawValue = max(0, rawValue) }
+
+        public static let automatic = ColumnLayout(rawValue: 0)
+        public static func fixed(_ columns: Int) -> ColumnLayout {
+            ColumnLayout(rawValue: max(1, columns))
+        }
+
+        /// Named for readability where a count is spelled out.
+        public static let one = ColumnLayout.fixed(1)
+        public static let two = ColumnLayout.fixed(2)
+        public static let three = ColumnLayout.fixed(3)
+
+        public var isAutomatic: Bool { rawValue == 0 }
+
+        /// The most columns this choice allows. Automatic is bounded by the pane alone.
+        public var limit: Int { isAutomatic ? .max : rawValue }
+
+        /// The choices offered in the menu and in Settings.
+        ///
+        /// Where the list stops is a question about shortcuts and controls, not about layout: a
+        /// larger count stored by hand is honoured, and automatic reaches whatever the display
+        /// holds regardless.
+        public static let offered: [ColumnLayout] =
+            [.automatic] + (1...4).map(ColumnLayout.fixed)
+
+        public var displayName: String {
+            guard !isAutomatic else { return "Automatic" }
+            let spelled = [1: "One", 2: "Two", 3: "Three", 4: "Four", 5: "Five", 6: "Six"]
+            return spelled[rawValue] ?? "\(rawValue)"
+        }
     }
 
     /// Body point size bounds. The floor is Apple's documented 10pt minimum plus one; the
@@ -92,13 +144,25 @@ public final class AppSettings {
         get { d.object(forKey: "renderDiagrams") as? Bool ?? true }
         set { d.set(newValue, forKey: "renderDiagrams"); notify() }
     }
-    /// Lay the document out as two columns side by side when the window is wide enough.
+    /// How many columns the reading pane may use.
     ///
-    /// On by default: at a comfortable measure a wide window shows a 500pt column of text in
-    /// 1800pt of space, and the second column costs nothing but the gutter.
-    public var spreadLayout: Bool {
-        get { d.object(forKey: "spreadLayout") as? Bool ?? true }
-        set { d.set(newValue, forKey: "spreadLayout"); notify() }
+    /// Automatic by default: at a comfortable measure a wide window shows a 500pt column of
+    /// text in 1800pt of space, and each further column costs nothing but the gutter.
+    public var columnLayout: ColumnLayout {
+        get {
+            if let raw = d.object(forKey: "columnLayout") as? Int {
+                return ColumnLayout(rawValue: raw)
+            }
+            // Migrated from `spreadLayout`, the Bool this replaced: off meant one column, on
+            // meant "two when it fits", which is what automatic now says with more headroom.
+            // Read through rather than rewritten on launch — nothing needs the old key gone,
+            // and a getter that migrates can be tested without touching disk.
+            if let legacy = d.object(forKey: "spreadLayout") as? Bool {
+                return legacy ? .automatic : .one
+            }
+            return .automatic
+        }
+        set { d.set(newValue.rawValue, forKey: "columnLayout"); notify() }
     }
 
     public var showFrontmatter: Bool {

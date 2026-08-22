@@ -261,16 +261,24 @@ public final class NativeDocumentView: NSView {
         return (columns, columns > 1 ? metrics.measure : metrics.blockMeasure(fitting: pane))
     }
 
-    /// How many columns fit at the reading measure.
+    /// How many columns fit at the reading measure, within the reader's choice.
     ///
-    /// Two only when the pane can hold two full measures plus the gutter and the page's own
-    /// margins — a squeezed spread is worse than one column, because the whole point is to stop
-    /// wasting the width, not to cram narrower lines into it.
-    static func columnCount(fitting pane: CGFloat, metrics: DocumentMetrics) -> Int {
-        guard AppSettings.shared.spreadLayout else { return 1 }
-        let needed = metrics.measure * 2 + DocumentStackView.gutter
-            + DocumentMetrics.minimumPadding * 2
-        return pane >= needed ? 2 : 1
+    /// A column is only ever the measure wide, so the count is simply how many measures plus
+    /// gutters the pane holds inside its own margins — a squeezed column is worse than unused
+    /// width, because the whole point is to stop wasting the width, not to cram narrower lines
+    /// into it. The same rule bounds a pinned choice: three columns asked for on a pane that
+    /// holds two gives two, not three thin ones. Nothing bounds it from above — a pane wide
+    /// enough for six columns of full measure gets six.
+    ///
+    /// `layout` is defaulted from the settings rather than read inside, so a test can ask about
+    /// a choice without writing to the process-wide defaults every other test shares.
+    static func columnCount(fitting pane: CGFloat, metrics: DocumentMetrics,
+                            layout: AppSettings.ColumnLayout
+                                = AppSettings.shared.columnLayout) -> Int {
+        let usable = pane - DocumentMetrics.minimumPadding * 2
+        let step = metrics.measure + DocumentStackView.gutter
+        let fits = Int((usable + DocumentStackView.gutter) / step)
+        return max(1, min(layout.limit, fits))
     }
 
     public override func layout() {
@@ -448,7 +456,7 @@ public final class NativeDocumentView: NSView {
         stackView.layoutSubtreeIfNeeded()
         // `scrollRangeToVisible`'s "just barely visible" alignment is wrong for navigation — the
         // reader expects the heading at the top. In a spread that means the top of the spread the
-        // heading is on, not the heading's own y: aligning mid-column would cut both columns.
+        // heading is on, not the heading's own y: aligning mid-column would cut every column.
         let target = max(0, stackView.alignmentY(forComponent: index) - Self.navigationTopGap)
         // Pinned whether or not the scroll is animated: with Reduce Motion on, a click on a short
         // section would otherwise land and immediately report the section *below* it.

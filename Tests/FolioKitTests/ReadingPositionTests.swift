@@ -57,14 +57,14 @@ final class ReadingPositionTests: XCTestCase {
 
     /// One column, to a spread, and back: the reader ends up where they started.
     func testAColumnRoundTripKeepsThePosition() throws {
-        let (view, window) = try pane(width: 900)
+        let (view, window) = try pane(width: paneWidth(forColumns: 1, metrics: metrics))
         XCTAssertEqual(view.stackView.columnCount, 1)
 
         readerScrolls(view, toY: 1400)
         let anchor = view.captureScrollAnchor()
         XCTAssertGreaterThan(anchor.component, 0, "the scroll should have moved off the title")
 
-        resize(window, view, to: 1500)
+        resize(window, view, to: paneWidth(forColumns: 2, metrics: metrics))
         XCTAssertEqual(view.stackView.columnCount, 2, "the pane should be a spread at 1500pt")
         resize(window, view, to: 900)
         XCTAssertEqual(view.stackView.columnCount, 1)
@@ -77,12 +77,12 @@ final class ReadingPositionTests: XCTestCase {
 
     /// And it stays exact however many times the trip is made — the drift was cumulative.
     func testRepeatedRoundTripsDoNotDrift() throws {
-        let (view, window) = try pane(width: 900)
+        let (view, window) = try pane(width: paneWidth(forColumns: 1, metrics: metrics))
         readerScrolls(view, toY: 1400)
         let anchor = view.captureScrollAnchor()
 
         for _ in 0..<3 {
-            resize(window, view, to: 1500)
+            resize(window, view, to: paneWidth(forColumns: 2, metrics: metrics))
             resize(window, view, to: 900)
         }
 
@@ -93,13 +93,13 @@ final class ReadingPositionTests: XCTestCase {
     /// A click in the outline is a position too: a later layout change brings the reader back to
     /// what they clicked, not to where they were before it.
     func testNavigationSetsThePositionThatIsRestored() throws {
-        let (view, window) = try pane(width: 900)
+        let (view, window) = try pane(width: paneWidth(forColumns: 1, metrics: metrics))
         let target = view.stackView.componentIndex(atY: 0) ?? 0
         readerScrolls(view, toY: 1400)
 
         view.scroll(toComponent: target, animated: false)
         settle()
-        resize(window, view, to: 1500)
+        resize(window, view, to: paneWidth(forColumns: 2, metrics: metrics))
         resize(window, view, to: 900)
 
         XCTAssertEqual(view.captureScrollAnchor().component, target,
