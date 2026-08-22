@@ -728,36 +728,6 @@ public final class DocumentStackView: NSView {
 
     // MARK: Page furniture
 
-    /// Radius of the marker that says the page carries on.
-    private static let markerRadius: CGFloat = 9
-
-    /// A ring with a chevron in it, sitting on the page divider.
-    ///
-    /// It replaces the words "continues on the next page". A sentence in the margin reads as
-    /// content — a reader has to stop and parse it — where a mark on the divider is understood
-    /// without being read, and cannot be mistaken for something the document said. Outlined rather
-    /// than filled, because a solid disc with an arrow in it looks like a button, and this is not
-    /// one: nothing happens when you click it.
-    private func drawContinuationMarker(at center: NSPoint) {
-        let radius = Self.markerRadius
-        let ring = NSBezierPath(ovalIn: NSRect(x: center.x - radius, y: center.y - radius,
-                                               width: radius * 2, height: radius * 2))
-        ring.lineWidth = 1.5
-        Ink.accent.withAlphaComponent(0.85).setStroke()
-        ring.stroke()
-
-        // A chevron pointing the way the reader is about to go.
-        let chevron = NSBezierPath()
-        chevron.move(to: NSPoint(x: center.x - 3.5, y: center.y - 1.75))
-        chevron.line(to: NSPoint(x: center.x, y: center.y + 2))
-        chevron.line(to: NSPoint(x: center.x + 3.5, y: center.y - 1.75))
-        chevron.lineWidth = 1.7
-        chevron.lineCapStyle = .round
-        chevron.lineJoinStyle = .round
-        Ink.accent.withAlphaComponent(0.95).setStroke()
-        chevron.stroke()
-    }
-
     /// Where the divider between two pages sits, or `nil` after the last one.
     public func pageBreakY(after spread: Int) -> CGFloat? {
         guard spread >= 0, spread + 1 < spreadTops.count else { return nil }
@@ -784,22 +754,14 @@ public final class DocumentStackView: NSView {
             guard dirtyRect.intersects(NSRect(x: spread.minX, y: y - 2,
                                               width: spread.width, height: 4)) else { continue }
 
-            // The divider stops short of the marker when the page carries on, so the two read as
-            // one piece of furniture rather than a line with something stuck on it.
-            let continues = chapterContinues(afterSpread: index)
-            let marker = NSPoint(x: spread.maxX - Self.markerRadius, y: y)
-            let end = continues ? marker.x - Self.markerRadius - 6 : spread.maxX
-
             let path = NSBezierPath()
             path.move(to: NSPoint(x: spread.minX, y: y))
-            path.line(to: NSPoint(x: end, y: y))
+            path.line(to: NSPoint(x: spread.maxX, y: y))
             path.lineWidth = weight
             path.lineCapStyle = .round
             path.setLineDash([2, 7], count: 2, phase: 0)
             Ink.accent.withAlphaComponent(0.85).setStroke()
             path.stroke()
-
-            if continues { drawContinuationMarker(at: marker) }
         }
     }
 

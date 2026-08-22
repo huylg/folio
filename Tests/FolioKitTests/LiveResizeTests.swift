@@ -2,13 +2,17 @@ import AppKit
 import XCTest
 @testable import FolioKit
 
-/// The page follows the hand.
+/// The page waits for the hand to come off.
 ///
-/// Dragging a window's edge — or the sidebar's divider — used to leave the text at its old measure
-/// until the drag ended, because reflowing a book once cost hundreds of milliseconds and a drag
-/// sends a size change per point. It no longer does, so the page keeps up; a budget is in place for
-/// the document that is genuinely too slow to, and an animation is still coalesced into one reflow
-/// at the end, which is a different thing to want.
+/// Reflowing means measuring every component, and a drag — the window's edge, or the sidebar's
+/// divider — sends a size change per point. Doing it under the hand churns the page while the
+/// reader is looking at it, and on a long document it is the main thread doing the churning for as
+/// long as the drag lasts. What follows the edge is the layout already in view; the text re-wraps
+/// once, when the edge is let go. An animation is coalesced the same way, into one reflow at the
+/// end.
+///
+/// Only the width is worth re-flowing for at all: height decides how tall a spread's columns are
+/// filled, and following it re-paginated the whole document for a change made to the window.
 final class LiveResizeTests: XCTestCase {
 
     private let metrics = DocumentMetrics(
@@ -24,7 +28,6 @@ final class LiveResizeTests: XCTestCase {
 
     override func tearDown() {
         NativeDocumentView.isDragging = { NSEvent.pressedMouseButtons & 1 != 0 }
-        NativeDocumentView.liveReflowBudget = 0.030
         super.tearDown()
     }
 
@@ -67,49 +70,50 @@ final class LiveResizeTests: XCTestCase {
         settle(settling)
     }
 
-    /// Dragging the window's edge: the text re-wraps while the drag is still going.
-    func testTheTextFollowsAWindowDrag() throws {
+    /// Only the width is the measure: dragging the bottom edge changes the window, not the text.
+    private func resize(_ window: NSWindow, _ view: NSView, toHeight height: CGFloat,
+                        settling: TimeInterval = 0.2) {
+        window.setContentSize(NSSize(width: window.contentView?.frame.width ?? 900,
+                                     height: height))
+        view.layoutSubtreeIfNeeded()
+        settle(settling)
+    }
+
+    /// Dragging the window's edge: the text re-wraps when the drag ends, not during it.
+    ///
+    /// The settle is longer than the debounce, so a drag that pauses is still a drag rather than a
+    /// size change that has stopped coming.
+    func testTheTextWaitsForTheWindowDragToEnd() throws {
         let (view, window) = try pane(width: 900)
         let before = view.stackView.columnWidth
 
         view.viewWillStartLiveResize()
-        resize(window, view, to: 460, settling: 0)
-        XCTAssertTrue(waitUntil { view.stackView.columnWidth < before },
-                      "the text kept its old measure while the drag was in progress")
+        resize(window, view, to: 460, settling: 0.3)
+        XCTAssertEqual(view.stackView.columnWidth, before, accuracy: 1,
+                       "the document was re-measured under the hand")
+
         view.viewDidEndLiveResize()
-    }
-
-    /// Dragging the sidebar's divider is a drag too, and AppKit sends no live-resize for it.
-    func testTheTextFollowsASidebarDrag() throws {
-        let (view, window) = try pane(width: 900)
-        let before = view.stackView.columnWidth
-
-        held = true
-        resize(window, view, to: 460, settling: 0)
         XCTAssertTrue(waitUntil { view.stackView.columnWidth < before },
-                      "the pane waited for the divider to be let go")
-        held = false
+                      "the reflow at the end of the drag never came")
     }
 
-    /// The first change of a drag is not made to wait out the rate limit.
-    func testTheFirstStepOfADragIsNotDelayed() throws {
+    /// Dragging the sidebar's divider is a drag too, and AppKit sends no live-resize for it — so
+    /// the release is what has to be noticed, with nothing announcing it.
+    func testTheTextWaitsForTheDividerToBeLetGo() throws {
         let (view, window) = try pane(width: 900)
         let before = view.stackView.columnWidth
 
         held = true
-        let started = Date()
-        resize(window, view, to: 460, settling: 0)
-        XCTAssertTrue(waitUntil { view.stackView.columnWidth < before })
-        let elapsed = Date().timeIntervalSince(started)
-        held = false
+        resize(window, view, to: 460, settling: 0.3)
+        XCTAssertEqual(view.stackView.columnWidth, before, accuracy: 1,
+                       "the divider drag re-paginated the document while it was held")
 
-        // Measuring the document is real work, so "at once" cannot mean zero — but it must not be
-        // that work *plus* a wait, which is what a debounce costs on every step of a drag.
-        XCTAssertLessThan(elapsed, NativeDocumentView.reflowSettleDelay,
-                          "the page took \(Int(elapsed * 1000))ms to follow the hand")
+        held = false
+        XCTAssertTrue(waitUntil { view.stackView.columnWidth < before },
+                      "letting the divider go never reflowed the page")
     }
 
-    /// An animation is not a hand: it gets one reflow, once it has settled.
+    /// An animation is not a hand either: it gets one reflow, once it has settled.
     func testAnAnimationIsCoalescedIntoOneReflow() throws {
         let (view, window) = try pane(width: 900)
         let before = view.stackView.columnWidth
@@ -125,22 +129,51 @@ final class LiveResizeTests: XCTestCase {
                       "the reflow at the end of the animation never came")
     }
 
-    /// A document too slow to follow stops trying, and lands once at the end.
-    func testASlowDocumentFallsBackToTheEnd() throws {
+    /// A vertical drag leaves the pages alone, during it and after it.
+    ///
+    /// Height is what a spread's columns are filled to, so following it re-paginated the whole
+    /// document: every page changed height and text moved between them, for a change the reader
+    /// made to the window and not to the text.
+    func testAVerticalDragDoesNotRepaginate() throws {
+        let (view, window) = try pane(width: 1600)
+        let stack = view.stackView
+        let before = (0..<stack.spreadCount).map { stack.spreadFrame(at: $0) }
+        XCTAssertGreaterThan(before.count, 1,
+                             "the document has to paginate for this to test anything")
+
+        view.viewWillStartLiveResize()
+        resize(window, view, toHeight: 480, settling: 0.1)
+        view.viewDidEndLiveResize()
+        settle()
+
+        let after = (0..<stack.spreadCount).map { stack.spreadFrame(at: $0) }
+        XCTAssertEqual(after, before, "a vertical drag re-paginated the document")
+    }
+
+    /// The width still reflows at a height that was dragged to.
+    func testAWidthDragStillReflowsAtADraggedHeight() throws {
         let (view, window) = try pane(width: 900)
         let before = view.stackView.columnWidth
-        // Nothing reflows inside no time at all, so every document is "too slow" here.
-        NativeDocumentView.liveReflowBudget = -1
 
+        resize(window, view, toHeight: 480)
         held = true
-        for width in stride(from: 894.0, through: 460, by: -12) {
-            resize(window, view, to: width, settling: 0.005)
-        }
-        XCTAssertEqual(view.stackView.columnWidth, before, accuracy: 1,
-                       "a document over the budget should not be following the hand")
-
+        window.setContentSize(NSSize(width: 460, height: 480))
+        view.layoutSubtreeIfNeeded()
+        settle(0.1)
         held = false
+
         XCTAssertTrue(waitUntil { view.stackView.columnWidth < before },
-                      "the reflow it kept skipping never happened")
+                      "the measure stopped following the window sideways")
+    }
+
+    /// The one thing height does have to move: the empty runway that lets the last heading be
+    /// scrolled to the top. Without it a window made taller stops being able to park them.
+    func testTheRunwayAfterTheDocumentFollowsTheHeight() throws {
+        let (view, window) = try pane(width: 900)
+        let short = view.stackView.trailingParkingSpace
+
+        resize(window, view, toHeight: 1000)
+        XCTAssertGreaterThan(view.stackView.trailingParkingSpace, short,
+                             "a taller window did not get more room to park its last heading")
     }
 }

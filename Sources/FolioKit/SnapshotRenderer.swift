@@ -65,6 +65,7 @@ public enum SnapshotRenderer {
             documentView.frame = NSRect(x: 0, y: 0,
                                        width: options.width, height: options.viewportHeight)
             documentView.layoutSubtreeIfNeeded()
+            documentView.reflowForSnapshot()
             drainRunLoop(documentView: documentView)
             documentView.showPageForSnapshot(options.page)
             drainRunLoop(documentView: documentView)
@@ -88,6 +89,7 @@ public enum SnapshotRenderer {
             window.setContentSize(NSSize(width: options.width, height: height))
             documentView.frame = NSRect(x: 0, y: 0, width: options.width, height: height)
             documentView.layoutSubtreeIfNeeded()
+            documentView.reflowForSnapshot()
             documentView.stackView.populateVisible()
             drainRunLoop(documentView: documentView)
         }
