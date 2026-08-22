@@ -41,7 +41,7 @@ final class WidgetLifecycleTests: XCTestCase {
     private func paneOnScreen() -> NativeDocumentView {
         let view = NativeDocumentView(metrics: metrics)
         view.frame = NSRect(x: 0, y: 0, width: 1000, height: 700)
-        let window = NSWindow(contentRect: view.frame, styleMask: [.titled],
+        let window = TestWindow(contentRect: view.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = view
         window.orderBack(nil)
@@ -137,7 +137,7 @@ final class OutlineTrackingTests: XCTestCase {
         let document = try sampleDocument()
         let view = NativeDocumentView(metrics: metrics)
         view.frame = NSRect(x: 0, y: 0, width: 900, height: 600)
-        let window = NSWindow(contentRect: view.frame, styleMask: [.titled],
+        let window = TestWindow(contentRect: view.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = view
         window.orderBack(nil)
@@ -162,7 +162,7 @@ final class OutlineTrackingTests: XCTestCase {
         let document = try sampleDocument()
         let view = NativeDocumentView(metrics: metrics)
         view.frame = NSRect(x: 0, y: 0, width: 1000, height: 700)
-        let window = NSWindow(contentRect: view.frame, styleMask: [.titled],
+        let window = TestWindow(contentRect: view.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = view
         window.orderBack(nil)
@@ -207,7 +207,7 @@ final class ComponentSelectionTests: XCTestCase {
             .appendingPathComponent("Sparse attention under bounded compute.md")
         let view = NativeDocumentView(metrics: metrics)
         view.frame = NSRect(x: 0, y: 0, width: 1000, height: 700)
-        let window = NSWindow(contentRect: view.frame, styleMask: [.titled],
+        let window = TestWindow(contentRect: view.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = view
         window.orderBack(nil)
@@ -301,7 +301,7 @@ final class NavigationPinTests: XCTestCase {
         let document = try MarkdownDocument(url: url)
         let view = NativeDocumentView(metrics: metrics)
         view.frame = NSRect(x: 0, y: 0, width: 900, height: 600)
-        let window = NSWindow(contentRect: view.frame, styleMask: [.titled],
+        let window = TestWindow(contentRect: view.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = view
         window.orderBack(nil)

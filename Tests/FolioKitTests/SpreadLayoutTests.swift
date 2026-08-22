@@ -27,7 +27,7 @@ final class SpreadLayoutTests: XCTestCase {
     func pane(width: CGFloat, height: CGFloat = 700) throws -> NativeDocumentView {
         let view = NativeDocumentView(metrics: metrics)
         view.frame = NSRect(x: 0, y: 0, width: width, height: height)
-        let window = NSWindow(contentRect: view.frame, styleMask: [.titled],
+        let window = TestWindow(contentRect: view.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = view
         window.orderBack(nil)
@@ -222,7 +222,7 @@ extension SpreadLayoutTests {
     private func paneWithLongTable() throws -> (NativeDocumentView, Int) {
         let view = NativeDocumentView(metrics: metrics)
         view.frame = NSRect(x: 0, y: 0, width: 1600, height: 700)
-        let window = NSWindow(contentRect: view.frame, styleMask: [.titled],
+        let window = TestWindow(contentRect: view.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = view
         window.orderBack(nil)
@@ -317,7 +317,7 @@ extension SpreadLayoutTests {
 
         let view = NativeDocumentView(metrics: metrics)
         view.frame = NSRect(x: 0, y: 0, width: 1600, height: 700)
-        let window = NSWindow(contentRect: view.frame, styleMask: [.titled],
+        let window = TestWindow(contentRect: view.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = view
         window.orderBack(nil)
@@ -342,7 +342,7 @@ extension SpreadLayoutTests {
     func testSingleColumnDoesNotSplitTables() throws {
         let view = NativeDocumentView(metrics: metrics)
         view.frame = NSRect(x: 0, y: 0, width: 900, height: 700)
-        let window = NSWindow(contentRect: view.frame, styleMask: [.titled],
+        let window = TestWindow(contentRect: view.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = view
         window.orderBack(nil)
@@ -379,7 +379,7 @@ extension SpreadLayoutTests {
 
         let view = NativeDocumentView(metrics: metrics)
         view.frame = NSRect(x: 0, y: 0, width: width, height: height)
-        let window = NSWindow(contentRect: view.frame, styleMask: [.titled],
+        let window = TestWindow(contentRect: view.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = view
         window.orderBack(nil)
@@ -490,7 +490,7 @@ extension SpreadLayoutTests {
                             width: CGFloat) throws -> NativeDocumentView {
         let view = NativeDocumentView(metrics: metrics)
         view.frame = NSRect(x: 0, y: 0, width: width, height: 700)
-        let window = NSWindow(contentRect: view.frame, styleMask: [.titled],
+        let window = TestWindow(contentRect: view.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = view
         window.orderBack(nil)

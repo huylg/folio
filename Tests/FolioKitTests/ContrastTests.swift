@@ -145,7 +145,7 @@ final class OutlineHoverStateTests: XCTestCase {
             .appendingPathComponent("Sparse attention under bounded compute.md")
         let controller = OutlineViewController()
         controller.view.frame = NSRect(x: 0, y: 0, width: 220, height: 220)
-        let window = NSWindow(contentRect: controller.view.frame, styleMask: [.titled],
+        let window = TestWindow(contentRect: controller.view.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = controller.view
         window.orderBack(nil)

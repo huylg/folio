@@ -30,7 +30,7 @@ final class GridTrackingTests: XCTestCase {
         let view = NativeDocumentView(metrics: metrics)
         view.animatesNavigation = false
         view.frame = NSRect(x: 0, y: 0, width: 1500, height: 700)
-        let window = NSWindow(contentRect: view.frame, styleMask: [.titled],
+        let window = TestWindow(contentRect: view.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = view
         window.orderBack(nil)

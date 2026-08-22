@@ -38,22 +38,23 @@ final class WindowChromeTests: XCTestCase {
     /// And it is still there once the sidebar is collapsed — that is the case it exists for.
     func testTheButtonSurvivesCollapsingTheSidebar() throws {
         let (controller, window) = try controller()
-        controller.toggleSidebar(nil)
-        for _ in 0..<10 {
-            _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
-        }
         let split = try XCTUnwrap(window.contentViewController as? NSSplitViewController)
-        XCTAssertTrue(split.splitViewItems[0].isCollapsed, "the sidebar did not collapse")
+
+        // Collapsing and expanding are animated, so the state is waited for rather than spun for a
+        // fixed number of turns: `RunLoop.run(mode:before:)` returns as soon as one source fires,
+        // so ten turns is however long the machine takes to fire ten sources — on a slow one that
+        // is over before the animation is, and the sidebar is still shut when the assert reads it.
+        controller.toggleSidebar(nil)
+        XCTAssertTrue(waitUntil { split.splitViewItems[0].isCollapsed },
+                      "the sidebar did not collapse")
         XCTAssertNotNil(window.toolbar?.items.first {
             $0.itemIdentifier == MainWindowController.sidebarItemIdentifier
         }, "the button vanished with the sidebar")
 
         // And it brings the sidebar back.
         controller.toggleSidebar(nil)
-        for _ in 0..<10 {
-            _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
-        }
-        XCTAssertFalse(split.splitViewItems[0].isCollapsed, "the button did not reopen the sidebar")
+        XCTAssertTrue(waitUntil { !split.splitViewItems[0].isCollapsed },
+                      "the button did not reopen the sidebar")
     }
 
     /// The outline opens wide: a fifth of the window landed on its 200pt minimum, where a

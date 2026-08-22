@@ -28,7 +28,7 @@ final class ReadingColumnTests: XCTestCase {
         view.frame = NSRect(x: 0, y: 0, width: width, height: 900)
         // A window is required: attachment views are vended by the viewport layout controller,
         // which only runs for a text view inside one.
-        let window = NSWindow(contentRect: view.frame, styleMask: [.titled],
+        let window = TestWindow(contentRect: view.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = view
         window.orderBack(nil)

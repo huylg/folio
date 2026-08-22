@@ -30,7 +30,7 @@ final class NavigationFlashTests: XCTestCase {
         // Unanimated: the flash fires on arrival, and this test is not about the easing.
         view.animatesNavigation = false
         view.frame = NSRect(x: 0, y: 0, width: width, height: 800)
-        let window = NSWindow(contentRect: view.frame, styleMask: [.titled],
+        let window = TestWindow(contentRect: view.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = view
         window.orderBack(nil)
@@ -102,7 +102,7 @@ final class NavigationFlashTests: XCTestCase {
         let view = NativeDocumentView(metrics: metrics)
         view.animatesNavigation = false
         view.frame = NSRect(x: 0, y: 0, width: 1600, height: 800)
-        let window = NSWindow(contentRect: view.frame, styleMask: [.titled],
+        let window = TestWindow(contentRect: view.frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = view
         window.orderBack(nil)
