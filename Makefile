@@ -3,7 +3,9 @@ CONFIG  ?= debug
 BUILDDIR = .build/$(CONFIG)
 BUNDLE   = build/$(APP).app
 BIN      = $(BUILDDIR)/$(APP)
-.PHONY: all build app run test dump snapshot clean
+ICONSET  = build/$(APP).iconset
+ICNS     = build/$(APP).icns
+.PHONY: all build app icon run test dump snapshot clean
 
 all: app
 
@@ -13,11 +15,23 @@ build:
 test:
 	swift test
 
-app: build
+# The icon is drawn by a script rather than checked in as a binary, so a change to it is a
+# readable diff. Regenerated whenever the generator changes.
+icon: $(ICNS)
+
+$(ICNS): Tools/MakeAppIcon.swift
+	@mkdir -p build
+	@rm -rf $(ICONSET)
+	swift Tools/MakeAppIcon.swift $(ICONSET)
+	iconutil -c icns $(ICONSET) -o $(ICNS)
+	@echo "Built $(ICNS)"
+
+app: build $(ICNS)
 	rm -rf $(BUNDLE)
 	mkdir -p $(BUNDLE)/Contents/MacOS $(BUNDLE)/Contents/Resources
 	cp $(BIN) $(BUNDLE)/Contents/MacOS/$(APP)
 	cp Support/Info.plist $(BUNDLE)/Contents/Info.plist
+	cp $(ICNS) $(BUNDLE)/Contents/Resources/$(APP).icns
 	@for b in $(BUILDDIR)/*.bundle; do \
 		[ -d "$$b" ] && cp -R "$$b" $(BUNDLE)/Contents/Resources/ || true; \
 	done
