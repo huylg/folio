@@ -5,6 +5,8 @@ import XCTest
 /// The window's own furniture: the outline's opening width, and the button that brings it back.
 final class WindowChromeTests: XCTestCase {
 
+    /// A window on the reading screen. The sidebar and the toolbar button belong to a document —
+    /// a window with none is on the welcome screen, which has neither.
     private func controller() throws -> (MainWindowController, NSWindow) {
         let controller = MainWindowController()
         let window = try XCTUnwrap(controller.window)
@@ -12,6 +14,7 @@ final class WindowChromeTests: XCTestCase {
         // divider has, which several of these assertions depend on.
         window.setContentSize(MainWindowController.defaultContentSize)
         window.orderBack(nil)
+        controller.openDocument(sampleURL())
         window.contentView?.layoutSubtreeIfNeeded()
         for _ in 0..<10 {
             _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))

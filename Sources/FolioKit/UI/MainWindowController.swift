@@ -2,18 +2,25 @@ import AppKit
 
 /// One window, one document.
 ///
-/// One window, one document: an outline sidebar and the rendered document. There is no folder
-/// browser and no cross-file search.
+/// Two screens, one at a time: the welcome screen until a document is open, then the reading
+/// screen — an outline sidebar and the rendered document. Opening a document navigates one way,
+/// the back button the other. There is no folder browser and no cross-file search.
 final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate, NSMenuItemValidation {
 
     // MARK: State
     private(set) var currentDocument: MarkdownDocument?
     private var presentationMode = false
 
+    /// Which screen the window is showing. `openDocument` moves one way, `goBack` the other.
+    private(set) var showsDocumentScreen = false
+    /// Whether the outline's opening width has been set, which happens once per window.
+    private var didPlaceSidebar = false
+
     var onClose: (() -> Void)?
 
     // MARK: View controllers
     private let splitVC = NSSplitViewController()
+    let welcomeVC = WelcomeViewController()
     let outlineVC = OutlineViewController()
     let documentVC = DocumentViewController()
 
@@ -81,21 +88,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
         splitVC.addSplitViewItem(outlineItem)
         splitVC.addSplitViewItem(contentItem)
-        window.contentViewController = splitVC
-
-        let toolbar = NSToolbar(identifier: "FolioToolbar")
-        toolbar.delegate = self
-        toolbar.displayMode = .iconOnly
-        toolbar.allowsUserCustomization = false
-        window.toolbar = toolbar
+        install(welcomeVC)
 
         wireCallbacks()
         updateTitle()
-        documentVC.showEmptyState()
-        // `preferredThicknessFraction` is a hint AppKit is free to ignore for a sidebar, and it
-        // did: the outline opened on its 200pt minimum. The divider is placed explicitly once the
-        // window has its real width.
-        DispatchQueue.main.async { [weak self] in self?.openSidebarAtFullWidth() }
 
         NotificationCenter.default.addObserver(
             self, selector: #selector(settingsChanged),
@@ -127,10 +123,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         documentVC.onOpenRelativeLink = { [weak self] url, fragment in
             self?.openDocument(url, scrollTo: fragment)
         }
-        documentVC.emptyStateView.onOpenDocument = {
+        welcomeVC.onOpenDocument = {
             NSApp.sendAction(#selector(AppDelegate.openDocumentAction(_:)), to: nil, from: nil)
         }
-        documentVC.emptyStateView.onOpenRecent = { [weak self] url in self?.openDocument(url) }
+        welcomeVC.onOpenRecent = { [weak self] url in self?.openDocument(url) }
     }
 
     // MARK: Opening
@@ -140,6 +136,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         do {
             let doc = try MarkdownDocument(url: url)
             currentDocument = doc
+            // Before the render, not after: the reading pane decides its column count from its
+            // own width, and on the welcome screen it has not been laid out at all.
+            showDocumentScreen()
             documentVC.render(document: doc)
             outlineVC.update(document: doc)
             NSDocumentController.shared.noteNewRecentDocumentURL(url)
@@ -157,6 +156,75 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             alert.informativeText = "\(url.lastPathComponent): \(error.localizedDescription)"
             alert.runModal()
         }
+    }
+
+    // MARK: Navigating between the screens
+
+    /// Leaves the welcome screen for the reading screen.
+    ///
+    /// A screen swap rather than unhiding a view: the sidebar, the toolbar, and the reading pane
+    /// all belong to the document, and none of them has anything to show until there is one.
+    private func showDocumentScreen() {
+        guard let window, !showsDocumentScreen else { return }
+        showsDocumentScreen = true
+        install(splitVC)
+        attachToolbar()
+        // Laid out here so the pane has its real width — and its inset under the toolbar —
+        // before the document is rendered into it.
+        window.layoutIfNeeded()
+        // `preferredThicknessFraction` is a hint AppKit is free to ignore for a sidebar, and it
+        // did: the outline opened on its 200pt minimum. The divider is placed explicitly once the
+        // window has its real width — the first time only, so coming back to a document does not
+        // undo a width the reader dragged for themselves.
+        if !didPlaceSidebar {
+            didPlaceSidebar = true
+            DispatchQueue.main.async { [weak self] in self?.openSidebarAtFullWidth() }
+        }
+        fadeIn(splitVC.view)
+    }
+
+    /// Back to the welcome screen, leaving the document behind.
+    ///
+    /// The window ends up as a fresh one does — no document, no outline, no toolbar — which is
+    /// also what makes it available again to `AppDelegate`'s "an empty window takes the document"
+    /// rule, rather than a spare window nothing will ever reuse.
+    private func showWelcomeScreen() {
+        guard let window, showsDocumentScreen else { return }
+        // Presentation mode is a way of reading a document, so leaving the document leaves it:
+        // full screen with the welcome screen in it is not a state worth being able to reach.
+        if presentationMode { togglePresentationMode(nil) }
+        showsDocumentScreen = false
+        currentDocument = nil
+        outlineVC.clear()
+        // Before the swap, so the toolbar is never seen over the welcome screen.
+        window.toolbar = nil
+        welcomeVC.reloadRecents()
+        install(welcomeVC)
+        updateTitle()
+        fadeIn(welcomeVC.view)
+    }
+
+    /// Puts a screen in the window without letting it resize the window.
+    ///
+    /// Setting `contentViewController` resizes the window to the incoming view's frame, which on
+    /// a swap means the reader's window jumps to whatever size a screen happened to be built at.
+    private func install(_ screen: NSViewController) {
+        guard let window else { return }
+        let frame = window.frame
+        screen.view.frame = NSRect(origin: .zero,
+                                   size: window.contentRect(forFrameRect: frame).size)
+        window.contentViewController = screen
+        window.setFrame(frame, display: false)
+    }
+
+    /// The arriving screen fades up, so the swap reads as one move rather than a cut.
+    private func fadeIn(_ view: NSView) {
+        guard !Self.isRunningTests else { return }
+        view.alphaValue = 0
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.18
+            view.animator().alphaValue = 1
+        }, completionHandler: { view.alphaValue = 1 })
     }
 
     private func updateTitle() {
@@ -179,6 +247,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         onClose?()
     }
 
+    /// The recents list is shared, so a window sitting on the welcome screen while another one
+    /// opened something has a stale list until it is looked at again.
+    func windowDidBecomeKey(_ notification: Notification) {
+        guard !showsDocumentScreen else { return }
+        welcomeVC.reloadRecents()
+    }
+
     // MARK: Toolbar
 
     /// The sidebar toggle, built explicitly rather than left to the system identifier.
@@ -188,8 +263,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// the button that reopens the sidebar.
     static let sidebarItemIdentifier = NSToolbarItem.Identifier("folioToggleSidebar")
 
+    /// The way back to the welcome screen.
+    static let backItemIdentifier = NSToolbarItem.Identifier("folioBack")
+
+    /// The back button sits *after* the tracking separator, over the document rather than over
+    /// the outline: it is the reading screen the reader is leaving, not the sidebar.
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.sidebarItemIdentifier, .sidebarTrackingSeparator]
+        [Self.sidebarItemIdentifier, .sidebarTrackingSeparator, Self.backItemIdentifier]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -199,27 +279,64 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     func toolbar(_ toolbar: NSToolbar,
                  itemForItemIdentifier identifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        guard identifier == Self.sidebarItemIdentifier else { return nil }
         let item = NSToolbarItem(itemIdentifier: identifier)
-        item.image = NSImage(systemSymbolName: "sidebar.leading",
-                             accessibilityDescription: "Show or hide the outline")
-        item.label = "Sidebar"
-        item.toolTip = "Show or hide the outline"
         item.target = self
-        item.action = #selector(toggleSidebar(_:))
         item.isNavigational = true
+        switch identifier {
+        case Self.sidebarItemIdentifier:
+            item.image = NSImage(systemSymbolName: "sidebar.leading",
+                                 accessibilityDescription: "Show or hide the outline")
+            item.label = "Sidebar"
+            item.toolTip = "Show or hide the outline"
+            item.action = #selector(toggleSidebar(_:))
+        case Self.backItemIdentifier:
+            item.image = NSImage(systemSymbolName: "chevron.backward",
+                                 accessibilityDescription: "Back to the welcome screen")
+            item.label = "Back"
+            item.toolTip = "Back to the welcome screen"
+            item.action = #selector(goBack(_:))
+        default:
+            return nil
+        }
         return item
+    }
+
+    /// The toolbar arrives with the reading screen.
+    ///
+    /// Both its items belong to the document — the sidebar toggle, and a tracking separator with
+    /// no split view to track — so the welcome screen has no toolbar rather than an empty one.
+    /// Attached on arrival rather than edited in place: a toolbar reads its defaults once, when it
+    /// is set on the window, and removing items from one the window has never displayed does not
+    /// take.
+    private func attachToolbar() {
+        guard let window, window.toolbar == nil else { return }
+        let toolbar = NSToolbar(identifier: "FolioToolbar")
+        toolbar.delegate = self
+        toolbar.displayMode = .iconOnly
+        toolbar.allowsUserCustomization = false
+        window.toolbar = toolbar
     }
 
     // MARK: Actions
 
     @objc func toggleSidebar(_ sender: Any?) {
+        guard showsDocumentScreen else { return }
         splitVC.toggleSidebar(sender)
+    }
+
+    @objc func goBack(_ sender: Any?) {
+        showWelcomeScreen()
+    }
+
+    /// Re-reads the recents list, for a change made from somewhere else — clearing them.
+    func reloadRecents() {
+        guard !showsDocumentScreen else { return }
+        welcomeVC.reloadRecents()
     }
 
     /// Opens the outline at its full width.
     func openSidebarAtFullWidth() {
-        guard let window, let outlineItem, !outlineItem.isCollapsed,
+        guard showsDocumentScreen, let window, let outlineItem, !outlineItem.isCollapsed,
               splitVC.splitView.arrangedSubviews.count > 1
         else { return }
         let content = window.contentRect(forFrameRect: window.frame).width
@@ -286,7 +403,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     /// Holds off AppKit's snap and starts watching, if the pointer is on the divider.
     private func beginDividerDrag(ifNear near: Bool) {
-        guard dragWatch == nil, let outlineItem, !outlineItem.isCollapsed else { return }
+        guard showsDocumentScreen, dragWatch == nil, let outlineItem, !outlineItem.isCollapsed
+        else { return }
         // The pointer has to be on the divider. Dragging the window's own left edge resizes the
         // split view too, and lands the pointer at x = 0 — which would read as closing.
         let divider = sidebarThickness + splitVC.splitView.dividerThickness / 2
@@ -380,7 +498,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         switch menuItem.action {
         case #selector(toggleSidebar(_:)):
             menuItem.title = sidebarCollapsed ? "Show Sidebar" : "Hide Sidebar"
-            return true
+            return showsDocumentScreen
+        case #selector(goBack(_:)):
+            return showsDocumentScreen
         case #selector(setColumnLayout(_:)):
             menuItem.state = menuItem.tag == AppSettings.shared.columnLayout.rawValue
                 ? .on : .off

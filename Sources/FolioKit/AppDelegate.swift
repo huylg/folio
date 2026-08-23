@@ -124,5 +124,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func clearRecents(_ sender: Any?) {
         NSDocumentController.shared.clearRecentDocuments(nil)
         AppSettings.shared.recents = []
+        // Any window still on the welcome screen is showing the list that was just cleared.
+        windowControllers.forEach { $0.reloadRecents() }
     }
 }

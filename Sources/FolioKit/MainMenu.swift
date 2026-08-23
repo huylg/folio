@@ -69,6 +69,11 @@ enum MainMenuBuilder {
 
         // View
         let view = NSMenu(title: "View")
+        let back = view.addItem(withTitle: "Back to Welcome",
+                                action: #selector(MainWindowController.goBack(_:)),
+                                keyEquivalent: "[")
+        back.keyEquivalentModifierMask = [.command]
+        view.addItem(.separator())
         let showSidebar = view.addItem(withTitle: "Show Sidebar", action: #selector(MainWindowController.toggleSidebar(_:)), keyEquivalent: "s")
         showSidebar.keyEquivalentModifierMask = [.control, .command]
         view.addItem(.separator())

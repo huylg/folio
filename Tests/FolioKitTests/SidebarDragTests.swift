@@ -27,12 +27,21 @@ final class SidebarDragTests: XCTestCase {
         super.tearDown()
     }
 
+    /// A window on the reading screen: the divider only exists once a document is open.
     private func openWindow() throws -> (MainWindowController, NSSplitViewController) {
         let controller = MainWindowController()
         let window = try XCTUnwrap(controller.window)
         // A frame restored from a previous run decides how much room the divider has.
         window.setContentSize(MainWindowController.defaultContentSize)
         window.orderBack(nil)
+        controller.openDocument(
+            URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("sample-vault/Drafts")
+                .appendingPathComponent("Sparse attention under bounded compute.md")
+        )
         window.contentView?.layoutSubtreeIfNeeded()
         settle()
         return (controller, try XCTUnwrap(window.contentViewController as? NSSplitViewController))
