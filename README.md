@@ -20,6 +20,10 @@ spread the width will hold.
 
 **Getting around**
 
+- A window with nothing open is a welcome screen of its own — the recents list and nothing else.
+  Clicking a file navigates to the reading screen, and the outline and the toolbar arrive with the
+  document rather than standing empty beside it. A back button in the toolbar — View › Back to
+  Welcome, ⌘[ — returns, leaving the window as free for the next document as a new one.
 - An outline sidebar that tracks what is on the page — one block over every section on screen, not
   a single highlighted row.
 - Clicking a heading scrolls there and glows the component it landed on.
@@ -73,7 +77,7 @@ A PNG of the reading pane. `make snapshot` does the whole sample vault at 900pt 
 Sources/FolioKit/
   Model/        document loading, frontmatter, settings
   Rendering/    Markdown → components: attributes, metrics, theme, block views
-  UI/           the window, the reading pane, the component stack, the outline
+  UI/           the window, the welcome screen, the reading pane, the component stack, the outline
 Sources/Folio/  the executable
 Tests/          140-odd tests, mostly against real windows
 sample-vault/   documents to read while working on it

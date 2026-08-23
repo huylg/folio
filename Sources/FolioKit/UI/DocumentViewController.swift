@@ -1,14 +1,15 @@
 import AppKit
 
-/// The reading pane: a native TextKit 2 document view and an empty state.
+/// The reading pane: the native TextKit 2 document view and the controls over it.
+///
+/// Nothing but a document. The "no document open" state is a screen of its own —
+/// `WelcomeViewController` — rather than a sibling view hidden behind this one.
 public final class DocumentViewController: NSViewController {
 
     public var onHeadingChange: ((Int) -> Void)?
     /// Every section on screen, so the outline can mark the group rather than one row.
     public var onVisibleSectionsChange: ((Set<Int>) -> Void)?
     public var onOpenRelativeLink: ((URL, String?) -> Void)?
-
-    public let emptyStateView = EmptyStateView()
 
     private var documentView: NativeDocumentView!
 
@@ -32,22 +33,13 @@ public final class DocumentViewController: NSViewController {
             self?.onVisibleSectionsChange?(indices)
         }
 
-        emptyStateView.translatesAutoresizingMaskIntoConstraints = false
-        emptyStateView.isHidden = true
-
         view.addSubview(documentView)
-        view.addSubview(emptyStateView)
 
         NSLayoutConstraint.activate([
             documentView.topAnchor.constraint(equalTo: view.topAnchor),
             documentView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             documentView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             documentView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-
-            emptyStateView.topAnchor.constraint(equalTo: view.topAnchor),
-            emptyStateView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            emptyStateView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            emptyStateView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
 
         view.setFrameSize(NSSize(width: 800, height: 600))
@@ -57,8 +49,6 @@ public final class DocumentViewController: NSViewController {
 
     public func render(document: MarkdownDocument, preserveScroll: Bool = false) {
         self.document = document
-        emptyStateView.isHidden = true
-        documentView.isHidden = false
 
         // A semantic anchor, not a pixel offset: the only thing that triggers a re-render is a
         // font, width, or density change, which reflows the document and makes a saved pixel
@@ -69,13 +59,6 @@ public final class DocumentViewController: NSViewController {
         documentView.render(document: document, metrics: metrics)
 
         if let anchor { documentView.restore(anchor) }
-    }
-
-    public func showEmptyState() {
-        document = nil
-        emptyStateView.reloadRecents()
-        emptyStateView.isHidden = false
-        documentView.isHidden = true
     }
 
     // MARK: Live controls

@@ -1,7 +1,13 @@
 import AppKit
 
-/// "No document open" — icon, copy, primary actions, and the recents list.
-public final class EmptyStateView: NSView {
+/// The welcome screen: the whole window until a document is open.
+///
+/// A screen of its own rather than a panel inside the reading pane. As an overlay it shared the
+/// window with an outline sidebar that had nothing to list, and opening a document only swapped
+/// one hidden view for another — the sidebar and the toolbar stayed exactly as they were, so
+/// nothing about the window said the reader had arrived anywhere. Opening a document from here
+/// navigates to the reading screen instead: see `MainWindowController.showDocumentScreen()`.
+public final class WelcomeViewController: NSViewController {
 
     public var onOpenDocument: (() -> Void)?
     public var onOpenRecent: ((URL) -> Void)?
@@ -9,12 +15,11 @@ public final class EmptyStateView: NSView {
     private let recentsStack = NSStackView()
     private let recentsHeader = NSTextField(labelWithString: "RECENT")
 
-    public override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
+    public override func loadView() {
+        view = NSView()
+        view.wantsLayer = true
         build()
     }
-
-    required public init?(coder: NSCoder) { fatalError() }
 
     private func build() {
         let icon = NSImageView()
@@ -60,10 +65,10 @@ public final class EmptyStateView: NSView {
         column.setCustomSpacing(8, after: recentsHeader)
         column.translatesAutoresizingMaskIntoConstraints = false
 
-        addSubview(column)
+        view.addSubview(column)
         NSLayoutConstraint.activate([
-            column.centerXAnchor.constraint(equalTo: centerXAnchor),
-            column.centerYAnchor.constraint(equalTo: centerYAnchor),
+            column.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            column.centerYAnchor.constraint(equalTo: view.centerYAnchor),
             column.widthAnchor.constraint(equalToConstant: 440),
             divider.widthAnchor.constraint(equalTo: column.widthAnchor),
             recentsStack.widthAnchor.constraint(equalTo: column.widthAnchor),
@@ -75,6 +80,7 @@ public final class EmptyStateView: NSView {
     }
 
     public func reloadRecents() {
+        guard isViewLoaded else { return }
         recentsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         let recents = AppSettings.shared.recents
             .filter { FileManager.default.fileExists(atPath: $0.path) }
@@ -93,12 +99,15 @@ public final class EmptyStateView: NSView {
         }
     }
 
+    /// The recents rows, in the order they are shown, for a test that stands in for the hand: a
+    /// row is clicked through a gesture recognizer, which a synthesized event does not reach.
+    var recentRows: [RecentRow] { recentsStack.arrangedSubviews.compactMap { $0 as? RecentRow } }
+
     @objc private func openDoc() { onOpenDocument?() }
 }
 
-private final class RecentRow: NSView {
+final class RecentRow: NSView {
     var onClick: (() -> Void)?
-    private let hover = NSVisualEffectView()
 
     init(url: URL, when: String) {
         super.init(frame: .zero)
