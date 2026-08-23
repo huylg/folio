@@ -175,6 +175,7 @@ public final class NativeDocumentView: NSView {
         stackView.setComponents(built.components, metrics: metrics)
         applyMeasure()
         stackView.layoutSubtreeIfNeeded()
+        scrollToTop()
         reportViewport()
     }
 
@@ -204,6 +205,29 @@ public final class NativeDocumentView: NSView {
 
     /// How much of the viewport is usable, once the toolbar's strip is taken out.
     private var visibleHeight: CGFloat { readerViewport.height }
+
+    /// The clip view's origin when the first line of the document meets the top of the page.
+    ///
+    /// Not zero. The window draws under its titlebar and toolbar, and AppKit reserves that strip
+    /// as a content inset, which puts the topmost scroll position a toolbar's height *above* the
+    /// document's own origin. The scroll view opens there by itself; clamping our own scrolls at
+    /// zero is what took it away, and the first reflow restores the reading position — so every
+    /// document opened 52pt down the page, its top margin behind the chrome and a strip of empty
+    /// scroll left above the first line.
+    private var topScrollOrigin: CGFloat { -scrollView.contentInsets.top }
+
+    /// Parks the viewport at the very top of the document.
+    ///
+    /// For the second document and every one after it: the scroll view keeps the offset it had,
+    /// so opening a file from a position halfway down a long one opened it halfway down. A
+    /// document shorter than the viewport hid this — there the offset has nowhere to go but the
+    /// top anyway.
+    private func scrollToTop() {
+        let clip = scrollView.contentView
+        clip.setBoundsOrigin(NSPoint(x: 0, y: topScrollOrigin))
+        scrollView.reflectScrolledClipView(clip)
+        stackView.populateVisible()
+    }
 
     // MARK: Measure
 
@@ -499,7 +523,7 @@ public final class NativeDocumentView: NSView {
     func showPageForSnapshot(_ page: Int) {
         let top = stackView.spreadFrame(at: page).minY
         scrollView.contentView.setBoundsOrigin(
-            NSPoint(x: 0, y: max(0, top - scrollView.contentInsets.top))
+            NSPoint(x: 0, y: max(topScrollOrigin, top - scrollView.contentInsets.top))
         )
         scrollView.reflectScrolledClipView(scrollView.contentView)
         stackView.populateVisible()
@@ -507,11 +531,12 @@ public final class NativeDocumentView: NSView {
 
     private func scroll(toY y: CGFloat, animated: Bool) {
         let clip = scrollView.contentView
-        let maximum = max(0, stackView.frame.height - clip.bounds.height)
+        let insets = scrollView.contentInsets
+        let minimum = topScrollOrigin
+        let maximum = max(minimum, stackView.frame.height + insets.bottom - clip.bounds.height)
         // `y` is where the document should meet the *visible* top, so the toolbar's strip comes
         // off it: scrolling to the raw value parked the target behind the toolbar.
-        let destination = NSPoint(x: 0,
-                                  y: min(max(0, y - scrollView.contentInsets.top), maximum))
+        let destination = NSPoint(x: 0, y: min(max(minimum, y - insets.top), maximum))
         // Clamped, and in the same visible terms the probes use, so arrival is judged against an
         // offset that is actually reachable.
         if navigationTarget != nil {
