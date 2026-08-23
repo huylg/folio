@@ -54,6 +54,12 @@ make app
 That writes `build/Folio.app`. `make run` opens it, `make test` runs the suite, `make build` just
 compiles.
 
+The app icon is drawn rather than checked in: `Tools/MakeAppIcon.swift` renders it in CoreGraphics
+and `make icon` pipes the result through `iconutil`, so a change to the icon is a readable diff and
+no binary lives in the tree. `make app` builds it for you. It is three drawings rather than one
+scaled down — the rule count that reads as text at 512 is a grey wash at 32, and at 16 a page is
+three pixels across, so only the heading bar survives.
+
 ## The command line
 
 The binary doubles as a renderer, which is how the layout is checked without launching anything.
@@ -79,6 +85,7 @@ Sources/FolioKit/
   Rendering/    Markdown → components: attributes, metrics, theme, block views
   UI/           the window, the welcome screen, the reading pane, the component stack, the outline
 Sources/Folio/  the executable
+Tools/          the app icon, drawn in CoreGraphics
 Tests/          140-odd tests, mostly against real windows
 sample-vault/   documents to read while working on it
 ```

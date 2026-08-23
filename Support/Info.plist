@@ -4,6 +4,8 @@
 <dict>
     <key>CFBundleExecutable</key>
     <string>Folio</string>
+    <key>CFBundleIconFile</key>
+    <string>Folio</string>
     <key>CFBundleIdentifier</key>
     <string>io.elsanow.folio</string>
     <key>CFBundleName</key>
