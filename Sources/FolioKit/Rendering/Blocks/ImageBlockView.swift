@@ -6,7 +6,7 @@ public final class ImageLoader {
     public static let shared = ImageLoader()
 
     private let cache = NSCache<NSURL, NSImage>()
-    private let queue = DispatchQueue(label: "io.elsanow.folio.images", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "io.huylg.folio.images", qos: .userInitiated)
     private var pending = 0
     private let lock = NSLock()
 
