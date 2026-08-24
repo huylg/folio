@@ -74,8 +74,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         super.init(window: window)
         window.delegate = self
 
+        // Keep the toolbar/titlebar strip present on both screens. The welcome toolbar is empty,
+        // but using the same unified chrome prevents the titlebar from changing height when a
+        // document opens.
+        installToolbar(forDocument: false)
+
         // The update pill lives in the titlebar rather than the toolbar so it survives the
-        // welcome screen, which has no toolbar at all. The window owns it from here.
+        // toolbar swap between the welcome and document screens. The window owns it from here.
         window.addTitlebarAccessoryViewController(UpdateBadgeAccessoryController())
 
         outlineItem = NSSplitViewItem(sidebarWithViewController: outlineVC)
@@ -166,13 +171,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     /// Leaves the welcome screen for the reading screen.
     ///
-    /// A screen swap rather than unhiding a view: the sidebar, the toolbar, and the reading pane
-    /// all belong to the document, and none of them has anything to show until there is one.
+    /// A screen swap rather than unhiding a view: the sidebar, the toolbar controls, and the
+    /// reading pane all belong to the document, and none has anything to show until there is one.
     private func showDocumentScreen() {
         guard let window, !showsDocumentScreen else { return }
         showsDocumentScreen = true
         install(splitVC)
-        attachToolbar()
+        installToolbar(forDocument: true)
         // Laid out here so the pane has its real width — and its inset under the toolbar —
         // before the document is rendered into it.
         window.layoutIfNeeded()
@@ -189,19 +194,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     /// Back to the welcome screen, leaving the document behind.
     ///
-    /// The window ends up as a fresh one does — no document, no outline, no toolbar — which is
-    /// also what makes it available again to `AppDelegate`'s "an empty window takes the document"
-    /// rule, rather than a spare window nothing will ever reuse.
+    /// The window ends up as a fresh one does — no document, no outline, and no document controls
+    /// in the toolbar — which also makes it available again to `AppDelegate`'s "an empty window
+    /// takes the document" rule, rather than a spare window nothing will ever reuse.
     private func showWelcomeScreen() {
-        guard let window, showsDocumentScreen else { return }
+        guard showsDocumentScreen else { return }
         // Presentation mode is a way of reading a document, so leaving the document leaves it:
         // full screen with the welcome screen in it is not a state worth being able to reach.
         if presentationMode { togglePresentationMode(nil) }
         showsDocumentScreen = false
         currentDocument = nil
         outlineVC.clear()
-        // Before the swap, so the toolbar is never seen over the welcome screen.
-        window.toolbar = nil
+        // Before the swap, so document controls are never seen over the welcome screen. An empty
+        // unified toolbar remains to keep the titlebar consistent with the document screen.
+        installToolbar(forDocument: false)
         welcomeVC.reloadRecents()
         install(welcomeVC)
         updateTitle()
@@ -260,6 +266,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     // MARK: Toolbar
 
+    private static let welcomeToolbarIdentifier = NSToolbar.Identifier("FolioWelcomeToolbar")
+    private static let documentToolbarIdentifier = NSToolbar.Identifier("FolioDocumentToolbar")
+
     /// The sidebar toggle, built explicitly rather than left to the system identifier.
     ///
     /// `.toggleSidebar` produced no item at all here, which left a collapsed sidebar with no way
@@ -273,7 +282,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// The back button sits *after* the tracking separator, over the document rather than over
     /// the outline: it is the reading screen the reader is leaving, not the sidebar.
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.sidebarItemIdentifier, .sidebarTrackingSeparator, Self.backItemIdentifier]
+        guard toolbar.identifier == Self.documentToolbarIdentifier else { return [] }
+        return [Self.sidebarItemIdentifier, .sidebarTrackingSeparator, Self.backItemIdentifier]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -305,16 +315,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         return item
     }
 
-    /// The toolbar arrives with the reading screen.
+    /// Installs chrome for a screen. Both toolbars use the window's unified style, so navigation
+    /// never changes the titlebar's height or material; the welcome variant is simply empty.
     ///
-    /// Both its items belong to the document — the sidebar toggle, and a tracking separator with
-    /// no split view to track — so the welcome screen has no toolbar rather than an empty one.
-    /// Attached on arrival rather than edited in place: a toolbar reads its defaults once, when it
-    /// is set on the window, and removing items from one the window has never displayed does not
-    /// take.
-    private func attachToolbar() {
-        guard let window, window.toolbar == nil else { return }
-        let toolbar = NSToolbar(identifier: "FolioToolbar")
+    /// Replacing rather than editing in place matters because a toolbar reads its default items
+    /// once, when it is attached to the window.
+    private func installToolbar(forDocument: Bool) {
+        guard let window else { return }
+        let identifier = forDocument
+            ? Self.documentToolbarIdentifier
+            : Self.welcomeToolbarIdentifier
+        guard window.toolbar?.identifier != identifier else { return }
+        let toolbar = NSToolbar(identifier: identifier)
         toolbar.delegate = self
         toolbar.displayMode = .iconOnly
         toolbar.allowsUserCustomization = false
@@ -525,4 +537,3 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
     }
 }
-

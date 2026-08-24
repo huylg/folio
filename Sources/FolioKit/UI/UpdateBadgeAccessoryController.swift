@@ -2,10 +2,9 @@ import AppKit
 
 /// Hangs the update badge off the window's titlebar.
 ///
-/// A titlebar accessory rather than a toolbar item, because the welcome screen has no toolbar —
-/// `showWelcomeScreen()` sets `window.toolbar = nil` — and a toolbar item would therefore vanish on
-/// the one screen a reader with no document open is looking at. An accessory belongs to the window
-/// and survives the swap between the two screens.
+/// A titlebar accessory rather than a toolbar item because the window swaps its empty welcome
+/// toolbar for the document toolbar during navigation. An accessory belongs to the window and
+/// survives that swap between the two screens.
 final class UpdateBadgeAccessoryController: NSTitlebarAccessoryViewController {
 
     private let badge = UpdateBadgeView(frame: .zero)

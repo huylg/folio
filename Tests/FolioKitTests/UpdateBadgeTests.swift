@@ -5,10 +5,9 @@ import XCTest
 /// The update pill: what it says, and where it lives.
 ///
 /// The placement assertion is the one with history behind it. The obvious home for the badge is a
-/// toolbar item, and it would have been wrong: `showWelcomeScreen()` sets `window.toolbar = nil`,
-/// so a toolbar item disappears on the one screen a reader with no document open is looking at.
-/// It is a titlebar accessory instead, which belongs to the window rather than the toolbar and
-/// survives the swap between the two screens.
+/// toolbar item, and it would have been wrong: navigation swaps the empty welcome toolbar for the
+/// document toolbar, so an item would disappear along with its toolbar. It is a titlebar accessory
+/// instead, which belongs to the window and survives the swap between the two screens.
 final class UpdateBadgeTests: XCTestCase {
 
     private var savedState: UpdateState = .idle
@@ -169,7 +168,8 @@ final class UpdateBadgeTests: XCTestCase {
     func testTheBadgeSurvivesBothScreensAndTheNavigationBetweenThem() throws {
         let (controller, window) = try newWindow()
 
-        XCTAssertNil(window.toolbar, "the welcome screen has no toolbar, which is the whole point")
+        XCTAssertTrue(try XCTUnwrap(window.toolbar).items.isEmpty,
+                      "the welcome screen should have empty unified chrome")
         XCTAssertNotNil(badgeAccessory(in: window), "no badge on the welcome screen")
 
         controller.openDocument(sampleURL())
@@ -179,7 +179,7 @@ final class UpdateBadgeTests: XCTestCase {
 
         controller.goBack(nil)
         settle()
-        XCTAssertNil(window.toolbar)
+        XCTAssertTrue(try XCTUnwrap(window.toolbar).items.isEmpty)
         XCTAssertNotNil(badgeAccessory(in: window), "the badge did not survive going back")
     }
 
