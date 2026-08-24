@@ -36,15 +36,13 @@ jobs:
       - name: Test
         run: make test
 
-      - name: Build the release app
-        run: make app CONFIG=release
-
-      - name: Archive the app
+      - name: Build the release app and disk image
         id: archive
         run: |
           tag="${{ github.event.inputs.tag || github.ref_name }}"
-          name="Folio-$tag.zip"
-          ditto -c -k --keepParent build/Folio.app "$name"
+          name="Folio-$tag.dmg"
+          make dmg CONFIG=release
+          mv build/Folio.dmg "$name"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "asset=$name" >> "$GITHUB_OUTPUT"
 
