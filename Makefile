@@ -5,7 +5,9 @@ BUNDLE   = build/$(APP).app
 BIN      = $(BUILDDIR)/$(APP)
 ICONSET  = build/$(APP).iconset
 ICNS     = build/$(APP).icns
-.PHONY: all build app icon run test dump snapshot clean
+DMG      = build/$(APP).dmg
+DMGROOT  = build/dmg
+.PHONY: all build app icon dmg run test dump snapshot clean
 
 all: app
 
@@ -37,6 +39,17 @@ app: build $(ICNS)
 	done
 	codesign --force --sign - $(BUNDLE)
 	@echo "Built $(BUNDLE)"
+
+# The release asset. A disk image rather than a zip so the install is the usual macOS
+# drag-to-Applications: the window shows the app beside a symlink to /Applications, and
+# nothing lands in Downloads half-unpacked.
+dmg: app
+	rm -rf $(DMGROOT) $(DMG)
+	mkdir -p $(DMGROOT)
+	cp -R $(BUNDLE) $(DMGROOT)/
+	ln -s /Applications $(DMGROOT)/Applications
+	hdiutil create -volname $(APP) -srcfolder $(DMGROOT) -ov -format UDZO $(DMG)
+	@echo "Built $(DMG)"
 
 run: app
 	open $(BUNDLE)
