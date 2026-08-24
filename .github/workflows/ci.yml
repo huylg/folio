@@ -15,7 +15,7 @@ jobs:
     name: Build and test
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Show toolchain
         run: |
@@ -29,7 +29,7 @@ jobs:
           [ "${sdk%%.*}" -ge 26 ] || { echo "::error::need the macOS 26 SDK or newer, got $sdk"; exit 1; }
 
       - name: Cache SwiftPM build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .build
           key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}-${{ hashFiles('Sources/**/*.swift', 'Tests/**/*.swift') }}
@@ -51,7 +51,7 @@ jobs:
           ditto -c -k --keepParent build/Folio.app build/Folio.app.zip
 
       - name: Upload the app bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Folio-app-debug
           path: build/Folio.app.zip
