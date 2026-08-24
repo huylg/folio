@@ -21,9 +21,9 @@ spread the width will hold.
 **Getting around**
 
 - A window with nothing open is a welcome screen of its own — the recents list and nothing else.
-  Clicking a file navigates to the reading screen, and the outline and the toolbar arrive with the
-  document rather than standing empty beside it. A back button in the toolbar — View › Back to
-  Welcome, ⌘[ — returns, leaving the window as free for the next document as a new one.
+  Clicking a file navigates to the reading screen, and the outline and document controls arrive
+  without changing the unified titlebar around them. A back button in the toolbar — View › Back
+  to Welcome, ⌘[ — returns, leaving the window as free for the next document as a new one.
 - An outline sidebar that tracks what is on the page — one block over every section on screen, not
   a single highlighted row.
 - Clicking a heading scrolls there and glows the component it landed on.

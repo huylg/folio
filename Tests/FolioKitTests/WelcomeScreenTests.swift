@@ -6,7 +6,8 @@ import XCTest
 ///
 /// It used to be a view hidden behind the reading pane: the window kept an outline sidebar with
 /// nothing to list and a toolbar button for a sidebar that had nothing in it, and opening a
-/// document swapped one hidden view for another. These assert the two screens are two screens.
+/// document swapped one hidden view for another. These assert the two screens are two screens,
+/// while their unified titlebar chrome stays consistent.
 final class WelcomeScreenTests: XCTestCase {
 
     private var savedRecents: [AppSettings.Recent] = []
@@ -46,7 +47,8 @@ final class WelcomeScreenTests: XCTestCase {
         }
     }
 
-    /// A fresh window is the welcome screen, whole: no split view, no sidebar, no toolbar.
+    /// A fresh window is the welcome screen, whole: no split view, no sidebar, and no document
+    /// controls. Its empty toolbar preserves the same unified titlebar as the reading screen.
     func testAFreshWindowIsTheWelcomeScreen() throws {
         let (controller, window) = try newWindow()
         XCTAssertFalse(controller.showsDocumentScreen)
@@ -54,10 +56,25 @@ final class WelcomeScreenTests: XCTestCase {
                            "the window is not showing the welcome screen")
         XCTAssertNil(window.contentViewController as? NSSplitViewController,
                      "the reading screen's split view is still the window's content")
-        XCTAssertNil(window.toolbar,
-                     "the welcome screen carries a toolbar for a sidebar it does not have: "
-                         + "\(window.toolbar?.items.map(\.itemIdentifier.rawValue) ?? [])")
+        let toolbar = try XCTUnwrap(window.toolbar,
+                                    "the welcome screen has different titlebar chrome")
+        XCTAssertTrue(toolbar.items.isEmpty,
+                      "the welcome screen carries document controls: "
+                          + "\(toolbar.items.map(\.itemIdentifier.rawValue))")
         XCTAssertEqual(window.title, "Folio")
+    }
+
+    /// Navigating changes the toolbar's controls, not the height of the titlebar around them.
+    func testBothScreensUseConsistentTitlebarChrome() throws {
+        let (controller, window) = try newWindow()
+        let welcomeChromeHeight = window.frame.height - window.contentLayoutRect.height
+
+        controller.openDocument(sampleURL())
+        settle()
+        let documentChromeHeight = window.frame.height - window.contentLayoutRect.height
+
+        XCTAssertEqual(documentChromeHeight, welcomeChromeHeight, accuracy: 1,
+                       "the titlebar changes height when a document opens")
     }
 
     /// The sidebar command is disabled there rather than toggling a sidebar that is not on screen.
@@ -152,7 +169,7 @@ final class WelcomeScreenTests: XCTestCase {
         XCTAssertGreaterThan(back, separator, "the back button sits over the sidebar")
     }
 
-    /// Going back leaves the window as a fresh one: welcome screen, no document, no toolbar.
+    /// Going back leaves the window as a fresh one: welcome screen, no document controls.
     func testBackReturnsToTheWelcomeScreen() throws {
         let (controller, window) = try newWindow()
         controller.openDocument(sampleURL())
@@ -165,7 +182,10 @@ final class WelcomeScreenTests: XCTestCase {
         XCTAssertIdentical(window.contentViewController, controller.welcomeVC,
                            "the window did not go back to the welcome screen")
         XCTAssertNil(controller.currentDocument)
-        XCTAssertNil(window.toolbar, "the reading screen's toolbar came back with it")
+        let toolbar = try XCTUnwrap(window.toolbar,
+                                    "the welcome screen lost its unified titlebar")
+        XCTAssertTrue(toolbar.items.isEmpty,
+                      "the reading screen's controls came back with it")
         XCTAssertEqual(window.title, "Folio")
         // The document just read is a recent now, so the list it comes back to is up to date.
         XCTAssertFalse(controller.welcomeVC.recentRows.isEmpty,
