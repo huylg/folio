@@ -747,9 +747,9 @@ public final class DocumentStackView: NSView {
         super.draw(dirtyRect)
         guard columnCount > 1, spreadTops.count > 1 else { return }
 
-        // Thicker and brighter than a hairline: at a hairline's weight it was easy to miss
-        // entirely, which for the one mark that says "the page ends here" defeats the purpose.
-        let weight: CGFloat = 2
+        // A hairline's weight, brightened: the accent tint and the dash rhythm are what make it
+        // read as chrome, so the line need not be heavy to say "the page ends here".
+        let weight: CGFloat = 1
         for index in spreadTops.indices.dropLast() {
             guard let y = pageBreakY(after: index) else { continue }
             let spread = spreadFrame(at: index)
