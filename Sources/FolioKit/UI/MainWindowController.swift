@@ -74,6 +74,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         super.init(window: window)
         window.delegate = self
 
+        // The update pill lives in the titlebar rather than the toolbar so it survives the
+        // welcome screen, which has no toolbar at all. The window owns it from here.
+        window.addTitlebarAccessoryViewController(UpdateBadgeAccessoryController())
+
         outlineItem = NSSplitViewItem(sidebarWithViewController: outlineVC)
         outlineItem.minimumThickness = 200
         outlineItem.maximumThickness = 360

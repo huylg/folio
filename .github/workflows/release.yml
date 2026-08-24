@@ -37,7 +37,16 @@ jobs:
         run: make test
 
       - name: Build the release app
-        run: make app CONFIG=release
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          # Stamp the tag into the bundle. Without it every published build reports the
+          # template version and the updater can never tell one release from the next.
+          make app CONFIG=release VERSION="${TAG#v}"
+          plist=build/Folio.app/Contents/Info.plist
+          stamped=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$plist")
+          echo "bundle version: $stamped"
+          [ "$stamped" = "${TAG#v}" ] || { echo "::error::version stamp is $stamped, expected ${TAG#v}"; exit 1; }
 
       - name: Archive the app
         id: archive
@@ -45,6 +54,10 @@ jobs:
           tag="${{ github.event.inputs.tag || github.ref_name }}"
           name="Folio-$tag.zip"
           ditto -c -k --keepParent build/Folio.app "$name"
+          # Published beside the zip so the in-app updater can tell a truncated or swapped
+          # download from a good one. TLS to GitHub is still the trust anchor: the bundle is
+          # signed ad hoc, so there is no publisher signature to check the archive against.
+          shasum -a 256 "$name" | awk '{print $1}' > "$name.sha256"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "asset=$name" >> "$GITHUB_OUTPUT"
 
@@ -55,9 +68,9 @@ jobs:
           tag="${{ steps.archive.outputs.tag }}"
           asset="${{ steps.archive.outputs.asset }}"
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" "$asset" --clobber
+            gh release upload "$tag" "$asset" "$asset.sha256" --clobber
           else
-            gh release create "$tag" "$asset" \
+            gh release create "$tag" "$asset" "$asset.sha256" \
               --title "Folio $tag" \
               --generate-notes
           fi

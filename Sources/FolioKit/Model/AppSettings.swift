@@ -177,6 +177,69 @@ public final class AppSettings {
         set { d.set(newValue, forKey: "loadRemoteImages"); notify() }
     }
 
+    // MARK: Updates
+
+    /// Whether Folio may check GitHub for a new release on its own.
+    ///
+    /// Optional on purpose: "not yet asked" is a third state, and it is the one a fresh install is
+    /// in. Folio otherwise never touches the network without being told to — remote images are off
+    /// by default for exactly this reason — so an updater that started polling on first launch
+    /// would contradict what the app tells the reader two panes away. It asks once instead, and
+    /// `Check for Updates…` works regardless of the answer.
+    public var automaticUpdateChecks: Bool? {
+        get { d.object(forKey: "automaticUpdateChecks") as? Bool }
+        set {
+            if let newValue {
+                d.set(newValue, forKey: "automaticUpdateChecks")
+            } else {
+                d.removeObject(forKey: "automaticUpdateChecks")
+            }
+            notify()
+        }
+    }
+
+    /// When the last automatic check ran, so launching four windows in a morning is still one
+    /// request. A manual check ignores this.
+    public var lastUpdateCheck: Date? {
+        get { d.object(forKey: "lastUpdateCheck") as? Date }
+        set { d.set(newValue, forKey: "lastUpdateCheck") }
+    }
+
+    /// An update that has been found but not yet installed.
+    ///
+    /// Remembered across launches, because otherwise it is forgotten the moment the app quits and
+    /// the once-a-day throttle then stops it being found again — so a reader who saw the pill on
+    /// Monday morning, quit, and came back after lunch would see nothing at all, and would go on
+    /// seeing nothing until the throttle expired. Stored as the whole release rather than a
+    /// version string so restoring it needs no network.
+    public var pendingUpdate: Release? {
+        get {
+            guard let data = d.data(forKey: "pendingUpdate") else { return nil }
+            return try? JSONDecoder().decode(Release.self, from: data)
+        }
+        set {
+            if let newValue {
+                d.set(try? JSONEncoder().encode(newValue), forKey: "pendingUpdate")
+            } else {
+                d.removeObject(forKey: "pendingUpdate")
+            }
+        }
+    }
+
+    /// A version the reader asked not to be told about again. Stored as the string rather than a
+    /// parsed version so an unreadable value can only ever fail to match.
+    public var skippedVersion: String? {
+        get { d.string(forKey: "skippedVersion") }
+        set {
+            if let newValue {
+                d.set(newValue, forKey: "skippedVersion")
+            } else {
+                d.removeObject(forKey: "skippedVersion")
+            }
+            notify()
+        }
+    }
+
     // MARK: Recents
 
     public struct Recent: Codable {

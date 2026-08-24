@@ -222,8 +222,38 @@ private final class MarkdownPane: SettingsPane {
 }
 
 private final class AdvancedPane: SettingsPane {
+
+    private let versionLabel = NSTextField(labelWithString: "")
+    private let statusLabel = NSTextField(labelWithString: "")
+
     override func loadView() {
         super.loadView()
+
+        // Version, then the update controls: the reader who came here to find out what they are
+        // running is the same one deciding whether to fetch something newer.
+        versionLabel.font = NSFont.systemFont(ofSize: 13)
+        versionLabel.stringValue = AppVersion.summary()
+        addRow("Version:", versionLabel)
+
+        let check = NSButton(title: "Check Now", target: self, action: #selector(checkNow))
+        check.bezelStyle = .rounded
+        statusLabel.font = NSFont.systemFont(ofSize: 11)
+        statusLabel.textColor = Ink.secondary
+        let checkRow = NSStackView(views: [check, statusLabel])
+        checkRow.orientation = .horizontal
+        checkRow.spacing = 10
+        addRow("Updates:", checkRow)
+
+        addSwitchRow("Check for updates automatically",
+                     "Once a day, over HTTPS from the GitHub releases page",
+                     isOn: AppSettings.shared.automaticUpdateChecks == true) {
+            AppSettings.shared.automaticUpdateChecks = $0
+            if $0 { UpdateController.shared.check(manual: false) }
+        }
+
+        let box = NSBox()
+        box.boxType = .separator
+        grid.addRow(with: [NSView(), box])
 
         let note = NSTextField(wrappingLabelWithString: "Folio opens files read-only and never writes to your documents. Only preferences and the recents list are stored.")
         note.font = NSFont.systemFont(ofSize: 12)
@@ -234,6 +264,47 @@ private final class AdvancedPane: SettingsPane {
         let reset = NSButton(title: "Reset All Settings", target: self, action: #selector(resetAll))
         reset.bezelStyle = .rounded
         grid.addRow(with: [NSView(), reset])
+
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(updateStateChanged),
+            name: .folioUpdateStateChanged, object: nil)
+        refreshStatus()
+    }
+
+    deinit { NotificationCenter.default.removeObserver(self) }
+
+    @objc private func updateStateChanged() { refreshStatus() }
+
+    private func refreshStatus() {
+        switch UpdateController.shared.state {
+        case .idle:
+            statusLabel.stringValue = Self.lastCheckedSummary()
+        case .checking:
+            statusLabel.stringValue = "Checking…"
+        case .upToDate:
+            statusLabel.stringValue = "Up to date."
+        case .available(let release):
+            statusLabel.stringValue = "Folio \(release.version) is available."
+        case .downloading(_, let fraction):
+            statusLabel.stringValue = "Downloading… \(Int((fraction * 100).rounded()))%"
+        case .readyToInstall(let release, _):
+            statusLabel.stringValue = "Folio \(release.version) is ready to install."
+        case .installing:
+            statusLabel.stringValue = "Installing…"
+        case .failed(let error):
+            statusLabel.stringValue = error.message
+        }
+    }
+
+    private static func lastCheckedSummary() -> String {
+        guard let last = AppSettings.shared.lastUpdateCheck else { return "Not checked yet." }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return "Last checked \(formatter.localizedString(for: last, relativeTo: Date()))."
+    }
+
+    @objc private func checkNow() {
+        UpdateController.shared.check(manual: true)
     }
 
     @objc private func resetAll() {
