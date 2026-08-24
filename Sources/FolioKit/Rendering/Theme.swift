@@ -109,6 +109,22 @@ public enum Ink {
         NSColor.controlAccentColor.withAlphaComponent(0.28)
     }
 
+    /// Diagram edges and their arrowheads.
+    ///
+    /// Deliberately not `decorative`, and not `hairlineStrong` either. An edge is what the
+    /// diagram *says* — it carries the meaning, not the chrome — and WCAG's 3:1 floor for
+    /// non-text marks applies to it. `hairlineStrong` resolves to a ~0.24-alpha grey, which
+    /// measures well under that floor on this canvas.
+    public static var diagramEdge: NSColor {
+        labelBlended(increaseContrast ? 0.18 : 0.38)
+    }
+
+    /// Node borders. One step quieter than an edge: the fill already separates a node from the
+    /// canvas, so the border only has to define where it ends.
+    public static var diagramStroke: NSColor {
+        labelBlended(increaseContrast ? 0.28 : 0.48)
+    }
+
     // MARK: Syntax
 
     /// Xcode-family palette built from adaptable system colors rather than CSS hexes.
