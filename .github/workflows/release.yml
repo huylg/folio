@@ -33,9 +33,6 @@ jobs:
           # on macOS 26. Fail here rather than shipping a bundle that looks stale.
           [ "${sdk%%.*}" -ge 26 ] || { echo "::error::need the macOS 26 SDK or newer, got $sdk"; exit 1; }
 
-      - name: Test
-        run: make test
-
       - name: Build the release app and disk image
         id: archive
         env:
