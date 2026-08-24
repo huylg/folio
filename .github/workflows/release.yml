@@ -38,12 +38,23 @@ jobs:
 
       - name: Build the release app and disk image
         id: archive
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          tag="${{ github.event.inputs.tag || github.ref_name }}"
-          name="Folio-$tag.dmg"
-          make dmg CONFIG=release
+          name="Folio-$TAG.dmg"
+          # Stamp the tag into the bundle. Without it every published build reports the
+          # template version and the updater can never tell one release from the next.
+          make dmg CONFIG=release VERSION="${TAG#v}"
+          plist=build/Folio.app/Contents/Info.plist
+          stamped=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$plist")
+          echo "bundle version: $stamped"
+          [ "$stamped" = "${TAG#v}" ] || { echo "::error::version stamp is $stamped, expected ${TAG#v}"; exit 1; }
           mv build/Folio.dmg "$name"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          # Published beside the image so the in-app updater can tell a truncated or swapped
+          # download from a good one. TLS to GitHub is still the trust anchor: the bundle is
+          # signed ad hoc, so there is no publisher signature to check the image against.
+          shasum -a 256 "$name" | awk '{print $1}' > "$name.sha256"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "asset=$name" >> "$GITHUB_OUTPUT"
 
       - name: Publish the release
@@ -53,9 +64,9 @@ jobs:
           tag="${{ steps.archive.outputs.tag }}"
           asset="${{ steps.archive.outputs.asset }}"
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" "$asset" --clobber
+            gh release upload "$tag" "$asset" "$asset.sha256" --clobber
           else
-            gh release create "$tag" "$asset" \
+            gh release create "$tag" "$asset" "$asset.sha256" \
               --title "Folio $tag" \
               --generate-notes
           fi

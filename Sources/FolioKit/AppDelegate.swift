@@ -23,6 +23,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             urls.forEach { openURL($0) }
         }
         NSApp.activate(ignoringOtherApps: true)
+        considerUpdates()
     }
 
     public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -81,6 +82,46 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         wc.showWindow(nil)
     }
 
+    // MARK: Updates
+
+    /// Asked once, then honoured.
+    ///
+    /// Folio tells the reader in its own settings that it does not reach the network unasked, so
+    /// the updater asks — once, on the first launch that reaches this code — rather than defaulting
+    /// itself on. `Check for Updates…` works either way, so declining costs nothing but the
+    /// automatic check.
+    private func considerUpdates() {
+        // Nothing to update from a `swift run` build or under the test runner, and no reason to
+        // put the question to anyone running one.
+        guard UpdateInstaller.installedBundleURL != nil else { return }
+
+        // First, put back anything found on an earlier launch. This is deliberately not behind
+        // the automatic-checks preference: it touches no network, and an update the reader has
+        // already been told about should not vanish because they quit the app.
+        UpdateController.shared.restorePendingUpdate()
+
+        guard AppSettings.shared.automaticUpdateChecks != nil else {
+            askAboutAutomaticUpdates()
+            return
+        }
+        UpdateController.shared.check(manual: false)
+    }
+
+    private func askAboutAutomaticUpdates() {
+        let alert = NSAlert()
+        alert.messageText = "Check for updates automatically?"
+        alert.informativeText =
+            "Folio can look for a new version once a day, over HTTPS from its GitHub releases "
+            + "page. Nothing about your documents is sent.\n\n"
+            + "You can change this later in Settings › Advanced, and Folio › Check for Updates… "
+            + "works either way."
+        alert.addButton(withTitle: "Check Automatically")
+        alert.addButton(withTitle: "Don’t Check")
+        let automatic = alert.runModal() == .alertFirstButtonReturn
+        AppSettings.shared.automaticUpdateChecks = automatic
+        if automatic { UpdateController.shared.check(manual: false) }
+    }
+
     // MARK: Actions
 
     @objc func newWindow(_ sender: Any?) {
@@ -119,6 +160,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindowController?.showWindow(nil)
         settingsWindowController?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc func checkForUpdates(_ sender: Any?) {
+        UpdateController.shared.check(manual: true)
     }
 
     @objc func clearRecents(_ sender: Any?) {

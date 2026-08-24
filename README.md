@@ -47,6 +47,33 @@ spread the width will hold.
 
 Dark appearance only. Contrast is checked in the test suite rather than eyeballed.
 
+## Updating
+
+Folio checks its own GitHub releases and, when there is a newer one, says so with a small pill in
+the titlebar. Clicking it downloads the release; clicking it again swaps the bundle and relaunches.
+The disk image is mounted, the app copied off it, and the volume unmounted, so an update taken this
+way needs none of the drag-across that installing by hand does. Releases up to v1.3.0 were zips and
+are still accepted, so a reader on an old build is not stranded.
+A right-click on the pill offers the release notes, skipping the version, and cancelling a download
+in progress.
+
+The check is a preference rather than a default. Folio otherwise never reaches the network without
+being asked — remote images are off for the same reason — so it puts the question once, on first
+launch, and honours the answer. `Folio › Check for Updates…` works either way, and Settings ›
+Advanced has the switch, the version the app is running, and a Check Now button.
+
+Two limits worth stating plainly:
+
+- The bundle is signed ad hoc and is not notarized, so there is no publisher signature to check a
+  download against. The trust anchor is HTTPS to GitHub plus the SHA-256 the release workflow
+  publishes beside the disk image, which catches a corrupt or substituted asset but not a
+  compromised GitHub account. Before anything is installed the unpacked bundle also has to identify itself as
+  `io.huylg.folio`, carry a runnable executable, and report a version — a download that fails any
+  of those is discarded with the installed copy untouched.
+- Folio will not ask for an administrator. A copy in `/Applications` under a standard account
+  cannot be replaced in place, so the updater reveals the new bundle in the Finder and leaves the
+  move to you.
+
 ## Building
 
 Swift 5.9 and macOS 13 or later.
@@ -87,10 +114,11 @@ A PNG of the reading pane. `make snapshot` does the whole sample vault at 900pt 
 Sources/FolioKit/
   Model/        document loading, frontmatter, settings
   Rendering/    Markdown → components: attributes, metrics, theme, block views
+  Update/       the release check, the download and its verification, the bundle swap
   UI/           the window, the welcome screen, the reading pane, the component stack, the outline
 Sources/Folio/  the executable
 Tools/          the app icon, drawn in CoreGraphics
-Tests/          140-odd tests, mostly against real windows
+Tests/          230-odd tests, mostly against real windows
 sample-vault/   documents to read while working on it
 ```
 
@@ -114,9 +142,13 @@ Two GitHub Actions workflows, both on `macos-26`:
 
 - `ci.yml` builds and runs the suite on every push to `main` and every pull request, then attaches
   the debug `Folio.app` to the run as an artifact.
-- `release.yml` fires on a `v*` tag: it runs the tests, builds `make dmg CONFIG=release`, and
-  publishes `Folio-<tag>.dmg` on a GitHub release with generated notes. The image opens on a window
-  holding the app next to a symlink to `/Applications`, so installing is the usual drag across.
+- `release.yml` fires on a `v*` tag: it runs the tests, builds `make dmg CONFIG=release VERSION=…`
+  with the tag stamped into the bundle, and publishes `Folio-<tag>.dmg` and its `.sha256` on a
+  GitHub release with generated notes. The image opens on a window holding the app next to a
+  symlink to `/Applications`, so installing is the usual drag across. The stamp is checked before
+  the image is built — a bundle that still claimed the template's version would leave the updater
+  unable to tell one release from the next.
 
 The bundle is signed ad hoc, so a downloaded build is quarantined until it is opened once from the
-Finder's context menu.
+Finder's context menu. An update installed from inside the app clears the flag itself, so that step
+is only for the first copy.

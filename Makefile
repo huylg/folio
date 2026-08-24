@@ -7,6 +7,14 @@ ICONSET  = build/$(APP).iconset
 ICNS     = build/$(APP).icns
 DMG      = build/$(APP).dmg
 DMGROOT  = build/dmg
+
+# Stamped into the bundle's Info.plist so the running app knows its own version — the updater
+# compares it against the latest GitHub release, and a bundle that always claimed 1.0 would think
+# itself out of date forever. The release workflow passes the tag explicitly; a working tree falls
+# back to its newest tag, and a checkout with no tags at all leaves the template values alone.
+VERSION  ?= $(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
+BUILDNUM ?= $(shell git rev-list --count HEAD 2>/dev/null)
+
 .PHONY: all build app icon dmg run test dump snapshot clean
 
 all: app
@@ -33,6 +41,14 @@ app: build $(ICNS)
 	mkdir -p $(BUNDLE)/Contents/MacOS $(BUNDLE)/Contents/Resources
 	cp $(BIN) $(BUNDLE)/Contents/MacOS/$(APP)
 	cp Support/Info.plist $(BUNDLE)/Contents/Info.plist
+	@if [ -n "$(VERSION)" ]; then \
+		/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $(VERSION)" \
+			$(BUNDLE)/Contents/Info.plist; \
+	fi
+	@if [ -n "$(BUILDNUM)" ]; then \
+		/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(BUILDNUM)" \
+			$(BUNDLE)/Contents/Info.plist; \
+	fi
 	cp $(ICNS) $(BUNDLE)/Contents/Resources/$(APP).icns
 	@for b in $(BUILDDIR)/*.bundle; do \
 		[ -d "$$b" ] && cp -R "$$b" $(BUNDLE)/Contents/Resources/ || true; \
