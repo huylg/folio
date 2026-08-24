@@ -28,9 +28,12 @@ public enum BlockViewFactory {
             // exactly what the previous renderer produced for this block.
             return SourceCardView(source: latex, label: "latex", metrics: metrics, host: host)
 
-        case .diagram(let source):
-            return SourceCardView(source: source, label: diagramLabel(for: source),
-                                  metrics: metrics, host: host)
+        case .diagram(let source, let graph):
+            guard let graph else {
+                return SourceCardView(source: source, label: sourceLabel(for: source),
+                                      metrics: metrics, host: host)
+            }
+            return DiagramBlockView(source: source, graph: graph, metrics: metrics, host: host)
 
         case .htmlBlock(let html):
             return SourceCardView(source: html, label: "html", metrics: metrics, host: host)
@@ -40,7 +43,8 @@ public enum BlockViewFactory {
     public static func height(
         for payload: BlockPayload,
         width: CGFloat,
-        metrics: DocumentMetrics
+        metrics: DocumentMetrics,
+        host: BlockHost? = nil
     ) -> CGFloat {
         switch payload {
         case .table(let spec):
@@ -52,22 +56,25 @@ public enum BlockViewFactory {
                                          width: width, metrics: metrics)
         case .math(let latex, _):
             return SourceCardView.height(source: latex, width: width, metrics: metrics)
-        case .diagram(let source):
-            return SourceCardView.height(source: source, width: width, metrics: metrics)
+        case .diagram(let source, let graph):
+            guard let graph else {
+                return SourceCardView.height(source: source, width: width, metrics: metrics)
+            }
+            return DiagramBlockView.height(source: source, graph: graph, width: width,
+                                           metrics: metrics, host: host)
         case .htmlBlock(let html):
             return SourceCardView.height(source: html, width: width, metrics: metrics)
         }
     }
 
-    /// Reports the diagram's declared type honestly, so an unsupported kind never looks as
-    /// though it were rendered.
-    private static func diagramLabel(for source: String) -> String {
-        let keyword = source
-            .components(separatedBy: "\n")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .first { !$0.isEmpty && !$0.hasPrefix("%%") }
-            .map { $0.components(separatedBy: CharacterSet(charactersIn: " \t")).first ?? $0 }
-        guard let keyword, !keyword.isEmpty else { return "mermaid" }
+    /// The label for a diagram Folio does **not** draw: the kind the author declared, behind a
+    /// reserved `mermaid ·` prefix.
+    ///
+    /// A drawn diagram gets its resolved kind bare (`flowchart LR`), so the prefix now carries a
+    /// specific meaning — "this is what you wrote, undrawn" — and an unsupported kind still
+    /// cannot be mistaken for a rendered one.
+    static func sourceLabel(for source: String) -> String {
+        guard let keyword = DiagramParser.declaredKeyword(source) else { return "mermaid" }
         return "mermaid · \(keyword)"
     }
 }

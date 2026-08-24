@@ -5,6 +5,7 @@ import AppKit
 public protocol BlockHost: AnyObject {
     var blockMetrics: DocumentMetrics { get }
     var sizeCache: BlockSizeCache { get }
+    var diagramLayouts: DiagramLayoutCache { get }
     func blockRequestsOpen(_ destination: String)
     func blockRequestsCopy(_ text: String)
     /// Bumped while a widget has asynchronous work outstanding, so headless snapshots can wait
@@ -39,5 +40,71 @@ public final class BlockSizeCache {
 
     public func remove(id: Int) {
         heights = heights.filter { $0.key.id != id }
+    }
+}
+
+/// Caches resolved diagram geometry per `(source, width, metrics)`.
+///
+/// `BlockSizeCache` stores a `CGFloat`, so it can answer the measure pass but cannot feed the
+/// draw pass — and without a second cache every diagram would be laid out twice, once to measure
+/// and once to draw. This lives on the **host** for the same reason `BlockSizeCache` does: views
+/// are built and destroyed as they scroll, while the geometry they were laid out against has to
+/// stay stable. A `static` cache inside the engine would instead be global mutable state shared
+/// by the app, the test suite and `--render-txt` over a whole vault, with no natural point to
+/// invalidate it.
+///
+/// Keyed by the **source string** rather than a component index, because the measure path never
+/// sees an index — and two identical diagrams in one document then share an entry, which is what
+/// you want.
+public final class DiagramLayoutCache {
+    private struct Key: Hashable {
+        let source: String
+        let width: Int
+        let fingerprint: String
+    }
+
+    /// Live resizing walks through many distinct widths, so the cache is bounded and evicts in
+    /// insertion order.
+    private static let capacity = 64
+
+    private var layouts: [Key: LaidOutDiagram] = [:]
+    private var insertion: [Key] = []
+
+    /// How many layouts were actually computed. A test asserts this is 1 across a measure and a
+    /// draw at the same width.
+    public private(set) var misses = 0
+
+    public init() {}
+
+    public func layout(
+        source: String,
+        graph: DiagramGraph,
+        width: CGFloat,
+        metrics: DocumentMetrics
+    ) -> LaidOutDiagram {
+        let key = Key(source: source, width: Int(width.rounded()),
+                      fingerprint: Self.fingerprint(metrics))
+        if let cached = layouts[key] { return cached }
+        misses += 1
+        let value = DiagramLayout.layout(graph: graph, width: width, metrics: metrics)
+        layouts[key] = value
+        insertion.append(key)
+        if insertion.count > Self.capacity {
+            layouts.removeValue(forKey: insertion.removeFirst())
+        }
+        return value
+    }
+
+    public func removeAll() {
+        layouts.removeAll()
+        insertion.removeAll()
+        misses = 0
+    }
+
+    /// `DocumentMetrics` is `Equatable` but not `Hashable`, and everything geometric about it is
+    /// derived from these four values.
+    private static func fingerprint(_ metrics: DocumentMetrics) -> String {
+        "\(metrics.ramp.family.rawValue)|\(metrics.ramp.scale)|"
+            + "\(metrics.lineWidth.rawValue)|\(metrics.density.rawValue)"
     }
 }

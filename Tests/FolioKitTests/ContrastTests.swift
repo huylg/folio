@@ -47,12 +47,47 @@ final class ContrastTests: XCTestCase {
         for (name, color) in tiers {
             for (surfaceName, surface) in [("page", Ink.page),
                                            ("cardFill", Ink.cardFill),
-                                           ("codeBackground", Ink.codeBackground)] {
+                                           ("codeBackground", Ink.codeBackground),
+                                           ("diagramBackground", Ink.diagramBackground)] {
                 let measured = ratio(color, on: surface)
                 XCTAssertGreaterThanOrEqual(
                     measured, readableFloor,
                     "\(name) on \(surfaceName) is \(String(format: "%.2f", measured)):1, "
                         + "below the \(readableFloor):1 floor"
+                )
+            }
+        }
+    }
+
+    /// A node's label sits on a tinted fill, which is translucent over the diagram canvas.
+    /// `tintFill` is the accent at 0.28 alpha, so this is a real question rather than a
+    /// formality.
+    func testDiagramNodeTextIsReadableOnATintedNode() {
+        let canvas = surface(Ink.diagramBackground)
+        for fill in [Ink.tintFill, Ink.cardFillStrong] {
+            let backdrop = fill.flattened(over: canvas, appearance: appearance) ?? canvas
+            let measured = Ink.body.contrastRatio(on: backdrop, appearance: appearance) ?? 0
+            XCTAssertGreaterThanOrEqual(
+                measured, readableFloor,
+                "node text is \(String(format: "%.2f", measured)):1 on a diagram node"
+            )
+        }
+    }
+
+    /// Edges and node borders are non-text marks, which WCAG 1.4.11 floors at 3:1. An edge is
+    /// what the diagram *says*, so it has to clear that: `decorative` and `hairlineStrong` both
+    /// disappear against this canvas, which is why the diagram palette has its own two entries.
+    func testDiagramMarksClearTheNonTextFloor() {
+        let nonTextFloor: CGFloat = 3.0
+        for (name, color) in [("diagramEdge", Ink.diagramEdge),
+                              ("diagramStroke", Ink.diagramStroke)] {
+            for (surfaceName, backdrop) in [("canvas", Ink.diagramBackground),
+                                            ("node", Ink.cardFillStrong)] {
+                let measured = ratio(color, on: backdrop)
+                XCTAssertGreaterThanOrEqual(
+                    measured, nonTextFloor,
+                    "\(name) on \(surfaceName) is \(String(format: "%.2f", measured)):1, "
+                        + "below the \(nonTextFloor):1 floor for non-text marks"
                 )
             }
         }

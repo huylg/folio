@@ -12,6 +12,9 @@ public struct DocumentStats {
     public var readMinutes: Int { max(1, Int((Double(words) / 240.0).rounded())) }
     public var equations = 0
     public var codeBlocks = 0
+    /// Mermaid fences the *author* wrote, not blocks Folio drew. A stat that moved when a reader
+    /// flipped `renderDiagrams` would make the meta line lie about the document; which of them
+    /// were drawn is in the dump's BLOCKS section.
     public var diagrams = 0
     public var citations = 0
     public var sectionCount = 0    // number of top-level (h1/h2) sections

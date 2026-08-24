@@ -184,8 +184,8 @@ private final class AppearancePane: SettingsPane {
         box.boxType = .separator
         grid.addRow(with: [NSView(), box])
 
-        addSwitchRow("Render LaTeX equations", "Display math as styled equation cards", isOn: s.renderEquations) { AppSettings.shared.renderEquations = $0 }
-        addSwitchRow("Render Mermaid diagrams", "Flowcharts, sequence, state", isOn: s.renderDiagrams) { AppSettings.shared.renderDiagrams = $0 }
+        addSwitchRow("Render LaTeX equations", "```math and $$ blocks (shown as source for now)", isOn: s.renderEquations) { AppSettings.shared.renderEquations = $0 }
+        addSwitchRow("Draw Mermaid diagrams", "Flowcharts and state diagrams; other kinds show their source", isOn: s.renderDiagrams) { AppSettings.shared.renderDiagrams = $0 }
         addSwitchRow("Show frontmatter", "YAML metadata card above the title", isOn: s.showFrontmatter) { AppSettings.shared.showFrontmatter = $0 }
     }
 
@@ -214,7 +214,7 @@ private final class MarkdownPane: SettingsPane {
         super.loadView()
         let s = AppSettings.shared
         addSwitchRow("Render LaTeX equations", "```math fences and $$ blocks", isOn: s.renderEquations) { AppSettings.shared.renderEquations = $0 }
-        addSwitchRow("Render Mermaid diagrams", "```mermaid fences", isOn: s.renderDiagrams) { AppSettings.shared.renderDiagrams = $0 }
+        addSwitchRow("Draw Mermaid diagrams", "```mermaid fences — flowchart, graph, stateDiagram-v2", isOn: s.renderDiagrams) { AppSettings.shared.renderDiagrams = $0 }
         addSwitchRow("Show frontmatter", "Leading --- YAML block", isOn: s.showFrontmatter) { AppSettings.shared.showFrontmatter = $0 }
         addSwitchRow("Load remote images", "Off by default: a local-file reader should not reach the network unasked",
                      isOn: s.loadRemoteImages) { AppSettings.shared.loadRemoteImages = $0 }
