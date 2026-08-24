@@ -30,11 +30,6 @@ public final class WelcomeViewController: NSViewController {
         let title = NSTextField(labelWithString: "No document open")
         title.font = NSFont.systemFont(ofSize: 22, weight: .semibold)
 
-        let subtitle = NSTextField(wrappingLabelWithString: "Open a Markdown file to read it. Folio never writes to your files.")
-        subtitle.font = NSFont.systemFont(ofSize: 14)
-        subtitle.textColor = Ink.secondary
-        subtitle.alignment = .center
-
         let openButton = NSButton(title: "Open document…", target: self, action: #selector(openDoc))
         openButton.bezelStyle = .rounded
         openButton.controlSize = .large
@@ -53,13 +48,12 @@ public final class WelcomeViewController: NSViewController {
         recentsStack.alignment = .leading
         recentsStack.spacing = 2
 
-        let column = NSStackView(views: [icon, title, subtitle, buttons, divider, recentsHeader, recentsStack])
+        let column = NSStackView(views: [icon, title, buttons, divider, recentsHeader, recentsStack])
         column.orientation = .vertical
         column.alignment = .centerX
         column.spacing = 8
         column.setCustomSpacing(20, after: icon)
-        column.setCustomSpacing(6, after: title)
-        column.setCustomSpacing(24, after: subtitle)
+        column.setCustomSpacing(24, after: title)
         column.setCustomSpacing(28, after: buttons)
         column.setCustomSpacing(14, after: divider)
         column.setCustomSpacing(8, after: recentsHeader)
@@ -73,7 +67,6 @@ public final class WelcomeViewController: NSViewController {
             divider.widthAnchor.constraint(equalTo: column.widthAnchor),
             recentsStack.widthAnchor.constraint(equalTo: column.widthAnchor),
             recentsHeader.leadingAnchor.constraint(equalTo: column.leadingAnchor, constant: 4),
-            subtitle.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
         ])
 
         reloadRecents()
