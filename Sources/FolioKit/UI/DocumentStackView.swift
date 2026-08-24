@@ -520,7 +520,8 @@ public final class DocumentStackView: NSView {
             case .code(_, _, let lines):
                 return CodeComponentView.height(lines: lines, width: width, metrics: metrics)
             case .widget(let payload):
-                return BlockViewFactory.height(for: payload, width: width, metrics: metrics)
+                return BlockViewFactory.height(for: payload, width: width,
+                                               metrics: metrics, host: self.host)
             case .rule:
                 return 1
             }

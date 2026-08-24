@@ -34,6 +34,7 @@ public final class NativeDocumentView: NSView {
     private var document: MarkdownDocument?
 
     public let sizeCache = BlockSizeCache()
+    public let diagramLayouts = DiagramLayoutCache()
     public var pendingWorkCount = 0
 
     /// Component index → index into `built.headings`, so the outline can be tracked in the
@@ -146,6 +147,7 @@ public final class NativeDocumentView: NSView {
     private func install(_ built: BuiltDocument, document: MarkdownDocument) {
         self.built = built
         sizeCache.removeAll()
+        diagramLayouts.removeAll()
 
         // Headings are tracked by component from here on, so the mapping is resolved once
         // rather than per scroll event.
@@ -182,6 +184,7 @@ public final class NativeDocumentView: NSView {
     public func updateMetrics(_ metrics: DocumentMetrics) {
         self.metrics = metrics
         sizeCache.removeAll()
+        diagramLayouts.removeAll()
         stackView.updateMetrics(metrics)
         applyMeasure()
     }

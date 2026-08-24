@@ -81,7 +81,9 @@ public struct BuiltDocument {
 public enum BlockPayload {
     case table(TableSpec)
     case math(latex: String, number: Int)
-    case diagram(source: String)
+    /// The parse result travels with the source so "can this be drawn" is decided once, by the
+    /// builder, and every consumer reads the same answer. A nil graph is an honest source card.
+    case diagram(source: String, graph: DiagramGraph?)
     case frontmatter(Frontmatter)
     case image(source: String, alt: String, base: URL)
     /// A verbatim HTML block. Shown as a source card: silently dropping a whole block in a
@@ -93,7 +95,7 @@ public enum BlockPayload {
         switch self {
         case .table(let spec): return spec.tabSeparated
         case .math(let latex, _): return "$$\n\(latex)\n$$"
-        case .diagram(let source): return "```mermaid\n\(source)\n```"
+        case .diagram(let source, _): return "```mermaid\n\(source)\n```"
         case .frontmatter(let fm):
             let lines = fm.orderedKeys.compactMap { key -> String? in
                 guard let value = fm.values[key] else { return nil }

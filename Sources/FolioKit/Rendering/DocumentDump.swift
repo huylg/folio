@@ -118,8 +118,15 @@ public enum DocumentDump {
                 + "header [\(spec.header.map(\.text.string).joined(separator: " | "))]"
         case .math(let latex, let number):
             return "math   equation \(number), \(latex.count) chars"
-        case .diagram(let source):
-            return "diagram \(source.components(separatedBy: "\n").count) lines"
+        case .diagram(let source, let graph):
+            guard let graph else {
+                // Named explicitly, so a regression that silently stops drawing shows up in
+                // `make dump` instead of looking like unchanged output.
+                let kind = DiagramParser.declaredKeyword(source) ?? "?"
+                return "diagram unsupported(\(kind)), "
+                    + "\(source.components(separatedBy: "\n").count) lines"
+            }
+            return "diagram \(graph.dumpDescription)"
         case .frontmatter(let fm):
             return "frontmatter \(fm.orderedKeys.count) keys"
         case .image(let source, let alt, _):

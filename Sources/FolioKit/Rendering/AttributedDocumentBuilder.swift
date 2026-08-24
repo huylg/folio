@@ -401,7 +401,10 @@ struct BlockWalker: MarkupWalker {
                 appendCodeCard(code, label: "mermaid", language: nil)
                 return
             }
-            appendBlockWidget(BlockPayload.diagram(source: code), kind: .diagram)
+            appendBlockWidget(
+                BlockPayload.diagram(source: code, graph: DiagramParser.parse(code)),
+                kind: .diagram
+            )
 
         case .code:
             appendCodeCard(code, label: info.label, language: info.language)
