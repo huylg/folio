@@ -189,15 +189,8 @@ public final class UpdateInstaller: NSObject, URLSessionDownloadDelegate {
             return .failure(.corruptArchive(error.localizedDescription))
         }
 
-        let attach = run("/usr/bin/hdiutil", [
-            "attach", image.path,
-            "-mountpoint", mountPoint.path,
-            "-nobrowse", "-readonly", "-noautoopen", "-quiet",
-        ])
-        guard attach.status == 0 else {
-            return .failure(.corruptArchive(attach.errorText.isEmpty
-                ? "The disk image would not mount."
-                : attach.errorText))
+        if case .failure(let error) = attach(image, at: mountPoint) {
+            return .failure(error)
         }
         defer {
             // `-force` because a Finder or Spotlight peek can hold the volume briefly, and a
@@ -217,6 +210,41 @@ public final class UpdateInstaller: NSObject, URLSessionDownloadDelegate {
             return .failure(.corruptArchive(copy.errorText))
         }
         return .success(destination)
+    }
+
+    /// How many times a mount is worth trying before the image is called bad.
+    static let mountAttempts = 3
+
+    /// `hdiutil attach`, retried.
+    ///
+    /// Mounting is the one step in the unpack that fails for reasons that have nothing to do with
+    /// the bytes we downloaded: disk arbitration is busy, another image is still detaching, the
+    /// machine is loaded. `hdiutil` reports all of that the same way it reports a file that is not
+    /// an image at all — a non-zero exit — so the retry cannot be conditional on the reason. A
+    /// file that is genuinely not a disk image simply fails every attempt and is refused a couple
+    /// of seconds later.
+    ///
+    /// Run without `-quiet` so a refusal can say why; `-quiet` suppresses the diagnosis too, and
+    /// "The disk image would not mount." with nothing after it is not something a reader, or a CI
+    /// log, can act on.
+    static func attach(_ image: URL, at mountPoint: URL) -> Result<Void, UpdateError> {
+        var complaint = ""
+        for attempt in 1...mountAttempts {
+            let attach = run("/usr/bin/hdiutil", [
+                "attach", image.path,
+                "-mountpoint", mountPoint.path,
+                "-nobrowse", "-readonly", "-noautoopen",
+            ])
+            if attach.status == 0 { return .success(()) }
+            complaint = attach.errorText.isEmpty ? attach.outputText : attach.errorText
+            guard attempt < mountAttempts else { break }
+            // Clear whatever a half-finished attach left behind, and give disk arbitration a
+            // moment: retrying into a mount point it is still working on fails the same way.
+            run("/usr/bin/hdiutil", ["detach", mountPoint.path, "-force", "-quiet"])
+            Thread.sleep(forTimeInterval: 1)
+        }
+        return .failure(.corruptArchive(
+            complaint.isEmpty ? "The disk image would not mount." : complaint))
     }
 
     static func firstAppBundle(in directory: URL) -> URL? {
@@ -418,23 +446,38 @@ public final class UpdateInstaller: NSObject, URLSessionDownloadDelegate {
         return url
     }
 
+    /// Both streams are captured, and both are drained: a tool that fills the 64K buffer of the
+    /// pipe nobody is reading blocks forever, and `hdiutil` talks on both of them. The output is
+    /// worth having because some tools report their failures on stdout.
     @discardableResult
-    static func run(_ path: String, _ arguments: [String]) -> (status: Int32, errorText: String) {
+    static func run(_ path: String, _ arguments: [String])
+        -> (status: Int32, errorText: String, outputText: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
         let errors = Pipe()
+        let output = Pipe()
         process.standardError = errors
-        process.standardOutput = Pipe()
+        process.standardOutput = output
         do {
             try process.run()
         } catch {
-            return (-1, error.localizedDescription)
+            return (-1, error.localizedDescription, "")
         }
-        let data = errors.fileHandleForReading.readDataToEndOfFile()
+        var outputData = Data()
+        let drained = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            outputData = output.fileHandleForReading.readDataToEndOfFile()
+            drained.signal()
+        }
+        let errorData = errors.fileHandleForReading.readDataToEndOfFile()
+        drained.wait()
         process.waitUntilExit()
-        let text = String(data: data, encoding: .utf8)?
+        return (process.terminationStatus, text(of: errorData), text(of: outputData))
+    }
+
+    private static func text(of data: Data) -> String {
+        String(data: data, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return (process.terminationStatus, text)
     }
 }

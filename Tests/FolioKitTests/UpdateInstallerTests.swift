@@ -124,7 +124,8 @@ final class UpdateInstallerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: mountPoint.path),
                        "the mount point should have been detached and removed")
         let attached = UpdateInstaller.run("/usr/bin/hdiutil", ["info"])
-        XCTAssertFalse(attached.errorText.contains(root.path))
+        XCTAssertFalse(attached.outputText.contains(root.path),
+                       "the image should not still be attached")
     }
 
     func testAnImageWithNoAppInsideIsRefused() throws {
@@ -152,9 +153,13 @@ final class UpdateInstallerTests: XCTestCase {
         try Data(repeating: 0x41, count: 4096).write(to: dmg)
 
         let result = UpdateInstaller.verifyAndUnpack(archive: dmg, release: release(), in: root)
-        guard case .failure(.corruptArchive) = result else {
+        guard case .failure(.corruptArchive(let reason)) = result else {
             return XCTFail("garbage should not mount, got \(result)")
         }
+        // hdiutil's own words rather than the fallback: a mount that fails with nothing to say
+        // leaves the reader, and a CI log, with nothing to act on.
+        XCTAssertNotEqual(reason, "The disk image would not mount.",
+                          "the refusal should carry the reason hdiutil gave")
     }
 
     // MARK: The happy path — a zip
