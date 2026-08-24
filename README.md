@@ -37,9 +37,13 @@ spread the width will hold.
 - Fenced code with syntax highlighting and a copy button.
 - YAML frontmatter as a card.
 - Images, with alt text.
-- Math, Mermaid diagrams, and raw HTML as labelled source cards with a copy button. These are not
-  rendered; the label says what the block declares itself to be, so an unsupported diagram never
-  looks as though it had been drawn.
+- Mermaid `flowchart`/`graph` and `stateDiagram-v2` drawn natively on a diagram card — no web
+  view, no image export. The header names the kind that was actually drawn, and says so when a
+  wide diagram had to be re-laid-out to fit the column.
+- Every other Mermaid kind, math, and raw HTML stay labelled source cards with a copy button.
+  Their label keeps the `mermaid ·` prefix, so a diagram Folio cannot draw never looks as though
+  it had been. A drawn diagram's text is not in the document's text stream — the copy button
+  returns the Mermaid source.
 
 Dark appearance only. Contrast is checked in the test suite rather than eyeballed.
 
