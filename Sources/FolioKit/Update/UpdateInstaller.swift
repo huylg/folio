@@ -8,7 +8,7 @@ import CryptoKit
 /// exactly as it was.
 public final class UpdateInstaller: NSObject, URLSessionDownloadDelegate {
 
-    public static let expectedBundleIdentifier = "io.elsanow.folio"
+    public static let expectedBundleIdentifier = "io.huylg.folio"
 
     private var session: URLSession?
     private var onProgress: ((Double) -> Void)?
@@ -147,20 +147,76 @@ public final class UpdateInstaller: NSObject, URLSessionDownloadDelegate {
             return .failure(.corruptArchive(error.localizedDescription))
         }
 
-        // `ditto -x -k`, matching the `ditto -c -k` the release workflow used: it is the tool that
-        // round-trips a bundle's symlinks and executable bits, which `unzip` does not.
-        let result = run("/usr/bin/ditto", ["-x", "-k", archive.path, unpacked.path])
+        let extracted = archive.pathExtension.lowercased() == "dmg"
+            ? copyAppOutOfImage(archive, into: unpacked)
+            : unzip(archive, into: unpacked)
+
+        switch extracted {
+        case .failure(let error):
+            return .failure(error)
+        case .success(let bundle):
+            if let problem = validate(bundleAt: bundle) { return .failure(problem) }
+            return .success(bundle)
+        }
+    }
+
+    /// `ditto -x -k`, matching the `ditto -c -k` that produced the zips up to v1.3.0: it is the
+    /// tool that round-trips a bundle's symlinks and executable bits, which `unzip` does not.
+    static func unzip(_ archive: URL, into directory: URL) -> Result<URL, UpdateError> {
+        let result = run("/usr/bin/ditto", ["-x", "-k", archive.path, directory.path])
         guard result.status == 0 else {
             return .failure(.corruptArchive(result.errorText))
         }
-
-        guard let bundle = firstAppBundle(in: unpacked) else {
+        guard let bundle = firstAppBundle(in: directory) else {
             return .failure(.notFolio("No Folio.app inside the archive."))
         }
-        if let problem = validate(bundleAt: bundle) {
-            return .failure(problem)
-        }
         return .success(bundle)
+    }
+
+    /// Mounts the release image, copies the app off it, and unmounts.
+    ///
+    /// Mounted read-only at a mount point of our own inside the scratch directory, and `-nobrowse`
+    /// so a background update never puts a volume on the reader's desktop. The detach is in a
+    /// `defer`: an image left mounted because the copy failed is a volume the reader has to eject
+    /// by hand to be rid of.
+    static func copyAppOutOfImage(_ image: URL, into directory: URL) -> Result<URL, UpdateError> {
+        let mountPoint = directory.deletingLastPathComponent()
+            .appendingPathComponent("mount", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: mountPoint,
+                                                    withIntermediateDirectories: true)
+        } catch {
+            return .failure(.corruptArchive(error.localizedDescription))
+        }
+
+        let attach = run("/usr/bin/hdiutil", [
+            "attach", image.path,
+            "-mountpoint", mountPoint.path,
+            "-nobrowse", "-readonly", "-noautoopen", "-quiet",
+        ])
+        guard attach.status == 0 else {
+            return .failure(.corruptArchive(attach.errorText.isEmpty
+                ? "The disk image would not mount."
+                : attach.errorText))
+        }
+        defer {
+            // `-force` because a Finder or Spotlight peek can hold the volume briefly, and a
+            // failed detach here would strand it.
+            run("/usr/bin/hdiutil", ["detach", mountPoint.path, "-force", "-quiet"])
+            try? FileManager.default.removeItem(at: mountPoint)
+        }
+
+        guard let source = firstAppBundle(in: mountPoint) else {
+            return .failure(.notFolio("No Folio.app inside the disk image."))
+        }
+        // Copied off before the image is unmounted, and with `ditto` again so the bundle arrives
+        // whole. The `Applications` symlink beside it on the image is not ours to take.
+        let destination = directory.appendingPathComponent(source.lastPathComponent)
+        let copy = run("/usr/bin/ditto", [source.path, destination.path])
+        guard copy.status == 0 else {
+            return .failure(.corruptArchive(copy.errorText))
+        }
+        return .success(destination)
     }
 
     static func firstAppBundle(in directory: URL) -> URL? {

@@ -45,13 +45,33 @@ final class UpdateInstallerTests: XCTestCase {
         return bundle
     }
 
-    /// `ditto -c -k --keepParent`, exactly as `release.yml` archives the real thing.
+    /// `ditto -c -k --keepParent`, as the releases up to v1.3.0 were archived.
     private func archive(_ bundle: URL, in directory: URL) throws -> URL {
         let zip = directory.appendingPathComponent("Folio-v1.4.0.zip")
         let result = UpdateInstaller.run(
             "/usr/bin/ditto", ["-c", "-k", "--keepParent", bundle.path, zip.path])
         XCTAssertEqual(result.status, 0, "ditto failed: \(result.errorText)")
         return zip
+    }
+
+    /// A disk image built the way `make dmg` builds one: the app beside a symlink to
+    /// `/Applications`, compressed with `hdiutil -format UDZO`.
+    private func diskImage(_ bundle: URL, in directory: URL) throws -> URL {
+        let root = try scratch().appendingPathComponent("dmgroot", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(
+            at: bundle, to: root.appendingPathComponent(bundle.lastPathComponent))
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent("Applications"),
+            withDestinationURL: URL(fileURLWithPath: "/Applications"))
+
+        let dmg = directory.appendingPathComponent("Folio-v1.4.0.dmg")
+        let result = UpdateInstaller.run("/usr/bin/hdiutil", [
+            "create", "-volname", "Folio", "-srcfolder", root.path,
+            "-ov", "-format", "UDZO", "-quiet", dmg.path,
+        ])
+        try XCTSkipUnless(result.status == 0, "hdiutil create failed: \(result.errorText)")
+        return dmg
     }
 
     /// No checksum URL, so `verifyAndUnpack` does the unpack and the validation without a network.
@@ -67,9 +87,81 @@ final class UpdateInstallerTests: XCTestCase {
                 pageURL: URL(string: "https://github.com/huylg/folio/releases/tag/v\(version)")!)
     }
 
-    // MARK: The happy path
+    // MARK: The happy path — a disk image
 
-    func testAGoodArchiveUnpacksAndValidates() throws {
+    /// The shape the release workflow actually publishes now. A `.dmg` has to be mounted rather
+    /// than extracted, so this is a different code path from the zip below, not a variation on it.
+    func testAGoodDiskImageMountsAndValidates() throws {
+        let root = try scratch()
+        let source = try makeBundle(in: try scratch())
+        let dmg = try diskImage(source, in: root)
+
+        switch UpdateInstaller.verifyAndUnpack(archive: dmg, release: release(), in: root) {
+        case .failure(let error):
+            XCTFail("a good disk image was refused: \(error.message)")
+        case .success(let bundle):
+            XCTAssertEqual(bundle.lastPathComponent, "Folio.app")
+            XCTAssertNil(UpdateInstaller.validate(bundleAt: bundle))
+            XCTAssertTrue(FileManager.default.isExecutableFile(
+                atPath: bundle.appendingPathComponent("Contents/MacOS/Folio").path))
+            // Copied off the image, not left pointing into a mounted volume that is about to go
+            // away — an installer handing back a path on an unmounted disk would fail later, far
+            // from the cause.
+            XCTAssertTrue(bundle.path.hasPrefix(root.path), "the app should be in the scratch dir")
+            XCTAssertFalse(bundle.path.contains("/Volumes/"))
+        }
+    }
+
+    /// The image must not be left mounted, whether the copy worked or not — a stranded volume is
+    /// something the reader has to eject by hand.
+    func testTheImageIsUnmountedAfterwards() throws {
+        let root = try scratch()
+        let dmg = try diskImage(try makeBundle(in: try scratch()), in: root)
+        let mountPoint = root.appendingPathComponent("mount")
+
+        _ = UpdateInstaller.verifyAndUnpack(archive: dmg, release: release(), in: root)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: mountPoint.path),
+                       "the mount point should have been detached and removed")
+        let attached = UpdateInstaller.run("/usr/bin/hdiutil", ["info"])
+        XCTAssertFalse(attached.errorText.contains(root.path))
+    }
+
+    func testAnImageWithNoAppInsideIsRefused() throws {
+        let root = try scratch()
+        let empty = try scratch().appendingPathComponent("dmgroot", isDirectory: true)
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+        try "hello".write(to: empty.appendingPathComponent("README.txt"),
+                          atomically: true, encoding: .utf8)
+        let dmg = root.appendingPathComponent("Folio-v1.4.0.dmg")
+        let made = UpdateInstaller.run("/usr/bin/hdiutil", [
+            "create", "-volname", "Folio", "-srcfolder", empty.path,
+            "-ov", "-format", "UDZO", "-quiet", dmg.path,
+        ])
+        try XCTSkipUnless(made.status == 0, "hdiutil create failed: \(made.errorText)")
+
+        let result = UpdateInstaller.verifyAndUnpack(archive: dmg, release: release(), in: root)
+        guard case .failure(.notFolio) = result else {
+            return XCTFail("an image with no app in it should be refused, got \(result)")
+        }
+    }
+
+    func testAFileThatIsNotADiskImageIsRefused() throws {
+        let root = try scratch()
+        let dmg = root.appendingPathComponent("Folio-v1.4.0.dmg")
+        try Data(repeating: 0x41, count: 4096).write(to: dmg)
+
+        let result = UpdateInstaller.verifyAndUnpack(archive: dmg, release: release(), in: root)
+        guard case .failure(.corruptArchive) = result else {
+            return XCTFail("garbage should not mount, got \(result)")
+        }
+    }
+
+    // MARK: The happy path — a zip
+
+    /// Everything up to v1.3.0 shipped as a zip, and a reader updating away from one of those
+    /// builds is downloading whatever that release carried.
+    func testAGoodZipArchiveUnpacksAndValidates() throws {
         let root = try scratch()
         let source = try makeBundle(in: try scratch())
         let zip = try archive(source, in: root)
@@ -89,7 +181,7 @@ final class UpdateInstallerTests: XCTestCase {
 
     // MARK: Refusals
 
-    func testAnArchiveWithNoAppInsideIsRefused() throws {
+    func testAZipWithNoAppInsideIsRefused() throws {
         let root = try scratch()
         let loose = try scratch().appendingPathComponent("notes.txt")
         try "hello".write(to: loose, atomically: true, encoding: .utf8)
@@ -103,7 +195,7 @@ final class UpdateInstallerTests: XCTestCase {
         }
     }
 
-    func testACorruptArchiveIsRefused() throws {
+    func testACorruptZipIsRefused() throws {
         let root = try scratch()
         let zip = root.appendingPathComponent("Folio-v1.4.0.zip")
         try Data(repeating: 0x41, count: 4096).write(to: zip)

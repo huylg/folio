@@ -26,7 +26,7 @@ final class ReleaseFeedTests: XCTestCase {
         let release = try decoded()
         XCTAssertEqual(release.version, AppVersion(major: 1, minor: 4, patch: 0))
         XCTAssertEqual(release.tag, "v1.4.0")
-        XCTAssertEqual(release.assetName, "Folio-v1.4.0.zip")
+        XCTAssertEqual(release.assetName, "Folio-v1.4.0.dmg")
         XCTAssertEqual(release.byteCount, 4_318_842)
         XCTAssertEqual(release.pageURL.absoluteString,
                        "https://github.com/huylg/folio/releases/tag/v1.4.0")
@@ -34,12 +34,30 @@ final class ReleaseFeedTests: XCTestCase {
         XCTAssertNotNil(release.publishedAt)
     }
 
-    /// The zip, not the checksum beside it — the two names differ by a suffix, and picking the
-    /// wrong one would download 65 bytes and call it an app.
-    func testPicksTheAppArchiveAndItsChecksum() throws {
+    /// The image, not the checksum beside it — the two names differ by a suffix, and picking the
+    /// wrong one would download 65 bytes and call it an app. And the `.dmg` over the `.zip` when a
+    /// release carries both, since the image is what the workflow builds.
+    func testPicksTheDiskImageAndItsChecksum() throws {
         let release = try decoded()
-        XCTAssertEqual(release.assetURL.lastPathComponent, "Folio-v1.4.0.zip")
-        XCTAssertEqual(release.checksumURL?.lastPathComponent, "Folio-v1.4.0.zip.sha256")
+        XCTAssertEqual(release.assetURL.lastPathComponent, "Folio-v1.4.0.dmg")
+        XCTAssertEqual(release.checksumURL?.lastPathComponent, "Folio-v1.4.0.dmg.sha256")
+    }
+
+    /// Everything up to v1.3.0 was published as a zip. A reader on one of those builds is updating
+    /// out of exactly that era, so a zip-only release still has to be usable.
+    func testAZipOnlyReleaseIsStillAccepted() {
+        let json = """
+        {"tag_name":"v1.3.0","html_url":"https://github.com/huylg/folio/releases/tag/v1.3.0",
+         "assets":[{"name":"Folio-v1.3.0.zip","size":4000000,
+                    "browser_download_url":"https://github.com/huylg/folio/x/Folio-v1.3.0.zip"}]}
+        """
+        switch GitHubReleaseFeed.decode(Data(json.utf8)) {
+        case .failure(let error):
+            XCTFail("a zip release should still be usable: \(error)")
+        case .success(let release):
+            XCTAssertEqual(release.assetName, "Folio-v1.3.0.zip")
+            XCTAssertNil(release.checksumURL, "older releases carry no checksum")
+        }
     }
 
     func testARelaseWithNoAppArchiveIsRefused() {

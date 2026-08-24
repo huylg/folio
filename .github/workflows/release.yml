@@ -36,29 +36,25 @@ jobs:
       - name: Test
         run: make test
 
-      - name: Build the release app
+      - name: Build the release app and disk image
+        id: archive
         env:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
+          name="Folio-$TAG.dmg"
           # Stamp the tag into the bundle. Without it every published build reports the
           # template version and the updater can never tell one release from the next.
-          make app CONFIG=release VERSION="${TAG#v}"
+          make dmg CONFIG=release VERSION="${TAG#v}"
           plist=build/Folio.app/Contents/Info.plist
           stamped=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$plist")
           echo "bundle version: $stamped"
           [ "$stamped" = "${TAG#v}" ] || { echo "::error::version stamp is $stamped, expected ${TAG#v}"; exit 1; }
-
-      - name: Archive the app
-        id: archive
-        run: |
-          tag="${{ github.event.inputs.tag || github.ref_name }}"
-          name="Folio-$tag.zip"
-          ditto -c -k --keepParent build/Folio.app "$name"
-          # Published beside the zip so the in-app updater can tell a truncated or swapped
+          mv build/Folio.dmg "$name"
+          # Published beside the image so the in-app updater can tell a truncated or swapped
           # download from a good one. TLS to GitHub is still the trust anchor: the bundle is
-          # signed ad hoc, so there is no publisher signature to check the archive against.
+          # signed ad hoc, so there is no publisher signature to check the image against.
           shasum -a 256 "$name" | awk '{print $1}' > "$name.sha256"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "asset=$name" >> "$GITHUB_OUTPUT"
 
       - name: Publish the release

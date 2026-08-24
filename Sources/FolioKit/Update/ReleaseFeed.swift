@@ -31,9 +31,14 @@ public enum UpdateSource {
         return allowedAssetHosts.contains(host)
     }
 
-    /// The zip the release workflow publishes, and the checksum beside it.
+    /// The image the release workflow publishes.
+    ///
+    /// Both extensions, because the releases page holds both: the workflow ships a `.dmg` now, and
+    /// everything up to v1.3.0 is a `.zip`. A reader on an old build is updating *from* that era,
+    /// so refusing the older shape would leave exactly the people who most need the update unable
+    /// to take it.
     static func isAppArchive(_ name: String) -> Bool {
-        name.hasPrefix("Folio-") && name.hasSuffix(".zip")
+        name.hasPrefix("Folio-") && (name.hasSuffix(".dmg") || name.hasSuffix(".zip"))
     }
 }
 
@@ -193,7 +198,10 @@ public final class GitHubReleaseFeed: ReleaseFeed {
             return .failure(.malformedFeed)
         }
 
-        guard let archive = payload.assets.first(where: { UpdateSource.isAppArchive($0.name) }),
+        // The disk image wins when a release carries both, since that is what the workflow builds
+        // and what the install instructions describe.
+        let archives = payload.assets.filter { UpdateSource.isAppArchive($0.name) }
+        guard let archive = archives.first(where: { $0.name.hasSuffix(".dmg") }) ?? archives.first,
               let assetURL = URL(string: archive.browser_download_url),
               UpdateSource.isAllowedAssetURL(assetURL)
         else {

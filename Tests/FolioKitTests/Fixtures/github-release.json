@@ -14,22 +14,32 @@
     {
       "url": "https://api.github.com/repos/huylg/folio/releases/assets/1",
       "id": 1,
-      "name": "Folio-v1.4.0.zip",
-      "content_type": "application/zip",
+      "name": "Folio-v1.4.0.dmg",
+      "content_type": "application/x-apple-diskimage",
       "state": "uploaded",
       "size": 4318842,
       "download_count": 12,
-      "browser_download_url": "https://github.com/huylg/folio/releases/download/v1.4.0/Folio-v1.4.0.zip"
+      "browser_download_url": "https://github.com/huylg/folio/releases/download/v1.4.0/Folio-v1.4.0.dmg"
     },
     {
       "url": "https://api.github.com/repos/huylg/folio/releases/assets/2",
       "id": 2,
-      "name": "Folio-v1.4.0.zip.sha256",
+      "name": "Folio-v1.4.0.dmg.sha256",
       "content_type": "text/plain",
       "state": "uploaded",
       "size": 65,
       "download_count": 3,
-      "browser_download_url": "https://github.com/huylg/folio/releases/download/v1.4.0/Folio-v1.4.0.zip.sha256"
+      "browser_download_url": "https://github.com/huylg/folio/releases/download/v1.4.0/Folio-v1.4.0.dmg.sha256"
+    },
+    {
+      "url": "https://api.github.com/repos/huylg/folio/releases/assets/3",
+      "id": 3,
+      "name": "Folio-v1.4.0.zip",
+      "content_type": "application/zip",
+      "state": "uploaded",
+      "size": 4400000,
+      "download_count": 1,
+      "browser_download_url": "https://github.com/huylg/folio/releases/download/v1.4.0/Folio-v1.4.0.zip"
     }
   ]
 }

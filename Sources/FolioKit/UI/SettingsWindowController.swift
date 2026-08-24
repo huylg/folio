@@ -308,7 +308,7 @@ private final class AdvancedPane: SettingsPane {
     }
 
     @objc private func resetAll() {
-        let domain = Bundle.main.bundleIdentifier ?? "io.elsanow.folio"
+        let domain = Bundle.main.bundleIdentifier ?? "io.huylg.folio"
         UserDefaults.standard.removePersistentDomain(forName: domain)
         AppSettings.shared.applyTheme()
         NotificationCenter.default.post(name: .folioSettingsChanged, object: nil)

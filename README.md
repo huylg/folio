@@ -47,6 +47,9 @@ Dark appearance only. Contrast is checked in the test suite rather than eyeballe
 
 Folio checks its own GitHub releases and, when there is a newer one, says so with a small pill in
 the titlebar. Clicking it downloads the release; clicking it again swaps the bundle and relaunches.
+The disk image is mounted, the app copied off it, and the volume unmounted, so an update taken this
+way needs none of the drag-across that installing by hand does. Releases up to v1.3.0 were zips and
+are still accepted, so a reader on an old build is not stranded.
 A right-click on the pill offers the release notes, skipping the version, and cancelling a download
 in progress.
 
@@ -59,9 +62,9 @@ Two limits worth stating plainly:
 
 - The bundle is signed ad hoc and is not notarized, so there is no publisher signature to check a
   download against. The trust anchor is HTTPS to GitHub plus the SHA-256 the release workflow
-  publishes beside the zip, which catches a corrupt or substituted asset but not a compromised
-  GitHub account. Before anything is installed the unpacked bundle also has to identify itself as
-  `io.elsanow.folio`, carry a runnable executable, and report a version — a download that fails any
+  publishes beside the disk image, which catches a corrupt or substituted asset but not a
+  compromised GitHub account. Before anything is installed the unpacked bundle also has to identify itself as
+  `io.huylg.folio`, carry a runnable executable, and report a version — a download that fails any
   of those is discarded with the installed copy untouched.
 - Folio will not ask for an administrator. A copy in `/Applications` under a standard account
   cannot be replaced in place, so the updater reveals the new bundle in the Finder and leaves the
@@ -76,7 +79,7 @@ make app
 ```
 
 That writes `build/Folio.app`. `make run` opens it, `make test` runs the suite, `make build` just
-compiles.
+compiles, and `make dmg` wraps the bundle into `build/Folio.dmg` the way a release does.
 
 The app icon is drawn rather than checked in: `Tools/MakeAppIcon.swift` renders it in CoreGraphics
 and `make icon` pipes the result through `iconutil`, so a change to the icon is a readable diff and
@@ -131,15 +134,16 @@ exist because a specific thing looked wrong once and the comment above them says
 
 ## Continuous integration
 
-Two GitHub Actions workflows, both on `macos-15`:
+Two GitHub Actions workflows, both on `macos-26`:
 
 - `ci.yml` builds and runs the suite on every push to `main` and every pull request, then attaches
   the debug `Folio.app` to the run as an artifact.
-- `release.yml` fires on a `v*` tag: it runs the tests, builds `make app CONFIG=release VERSION=…`
-  with the tag stamped into the bundle, and publishes `Folio-<tag>.zip` and its `.sha256` on a
-  GitHub release with generated notes. The stamp is checked before the archive is cut — a bundle
-  that still claimed the template's version would leave the updater unable to tell one release
-  from the next.
+- `release.yml` fires on a `v*` tag: it runs the tests, builds `make dmg CONFIG=release VERSION=…`
+  with the tag stamped into the bundle, and publishes `Folio-<tag>.dmg` and its `.sha256` on a
+  GitHub release with generated notes. The image opens on a window holding the app next to a
+  symlink to `/Applications`, so installing is the usual drag across. The stamp is checked before
+  the image is built — a bundle that still claimed the template's version would leave the updater
+  unable to tell one release from the next.
 
 The bundle is signed ad hoc, so a downloaded build is quarantined until it is opened once from the
 Finder's context menu. An update installed from inside the app clears the flag itself, so that step

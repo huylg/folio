@@ -5,6 +5,8 @@ BUNDLE   = build/$(APP).app
 BIN      = $(BUILDDIR)/$(APP)
 ICONSET  = build/$(APP).iconset
 ICNS     = build/$(APP).icns
+DMG      = build/$(APP).dmg
+DMGROOT  = build/dmg
 
 # Stamped into the bundle's Info.plist so the running app knows its own version — the updater
 # compares it against the latest GitHub release, and a bundle that always claimed 1.0 would think
@@ -13,7 +15,7 @@ ICNS     = build/$(APP).icns
 VERSION  ?= $(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
 BUILDNUM ?= $(shell git rev-list --count HEAD 2>/dev/null)
 
-.PHONY: all build app icon run test dump snapshot clean
+.PHONY: all build app icon dmg run test dump snapshot clean
 
 all: app
 
@@ -53,6 +55,17 @@ app: build $(ICNS)
 	done
 	codesign --force --sign - $(BUNDLE)
 	@echo "Built $(BUNDLE)"
+
+# The release asset. A disk image rather than a zip so the install is the usual macOS
+# drag-to-Applications: the window shows the app beside a symlink to /Applications, and
+# nothing lands in Downloads half-unpacked.
+dmg: app
+	rm -rf $(DMGROOT) $(DMG)
+	mkdir -p $(DMGROOT)
+	cp -R $(BUNDLE) $(DMGROOT)/
+	ln -s /Applications $(DMGROOT)/Applications
+	hdiutil create -volname $(APP) -srcfolder $(DMGROOT) -ov -format UDZO $(DMG)
+	@echo "Built $(DMG)"
 
 run: app
 	open $(BUNDLE)
