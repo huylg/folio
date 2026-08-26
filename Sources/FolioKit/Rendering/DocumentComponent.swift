@@ -53,13 +53,25 @@ public struct DocumentComponent {
         self.parts = parts
     }
 
-    /// The single character range covering `items` of `parts`, for slicing a page of a list.
+    /// The single character range covering `items` of `parts`, for measuring and slicing a page
+    /// of a list.
+    ///
+    /// A trailing separator newline is left out. The newlines *between* the items are their
+    /// paragraph breaks and must stay, but one at the very end is pure layout ballast: TextKit
+    /// lays out an empty final line fragment for it, which made every page of a split list
+    /// measure a blank line taller than what it shows.
     public func partRange(_ items: Range<Int>) -> NSRange? {
         guard let parts, !items.isEmpty,
-              items.lowerBound >= 0, items.upperBound <= parts.count else { return nil }
+              items.lowerBound >= 0, items.upperBound <= parts.count,
+              case .text(let attributed) = content else { return nil }
         let first = parts[items.lowerBound]
         let last = parts[items.upperBound - 1]
-        return NSRange(location: first.location, length: NSMaxRange(last) - first.location)
+        var length = NSMaxRange(last) - first.location
+        if length > 0,
+           (attributed.string as NSString).character(at: first.location + length - 1) == 0x0A {
+            length -= 1
+        }
+        return NSRange(location: first.location, length: length)
     }
 
     /// Plain text for the clipboard.

@@ -794,3 +794,31 @@ extension SpreadLayoutTests {
         XCTAssertEqual(view.stackView.placementCount(ofComponent: list), 1)
     }
 }
+
+extension SpreadLayoutTests {
+
+    /// A page's box is exactly what its items measure — no phantom blank line at the foot.
+    ///
+    /// Every part carries its separator newline, and TextKit lays out an empty final line
+    /// fragment for a trailing newline, so a page measured a blank line taller than what it
+    /// showed: a dead strip under every page of a split list, and under whatever followed it.
+    func testSplitListPagesHaveNoPhantomSpace() throws {
+        let (view, list) = try paneWithLongList()
+        let stack = view.stackView
+        let component = try XCTUnwrap(view.built).components[list]
+        guard case .text(let attributed) = component.content else { return XCTFail("not text") }
+
+        let frames = stack.frames(ofComponent: list)
+        let ranges = stack.rowRanges(ofComponent: list)
+        XCTAssertEqual(frames.count, ranges.count)
+        for (frame, range) in zip(frames, ranges) {
+            let slice = try XCTUnwrap(component.partRange(range))
+            let height = TextComponentView.height(
+                of: attributed.attributedSubstring(from: slice), width: frame.width)
+            // Each item's measurement rounds up at most a point; anything past that is space
+            // the reader sees and the text does not fill.
+            XCTAssertEqual(frame.height, height, accuracy: CGFloat(range.count) + 1,
+                           "the box of page \(range) drifts from its content")
+        }
+    }
+}

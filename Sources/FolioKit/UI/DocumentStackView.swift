@@ -503,14 +503,18 @@ public final class DocumentStackView: NSView {
     /// the spread.
     ///
     /// A page of items is the sum of their heights plus the gaps between them, and the sum is
-    /// exact: wrapping is per paragraph, and TextKit collapses a container's outer paragraph
-    /// spacing, so an item measures the same alone as it lays out inside any slice.
+    /// exact: wrapping is per paragraph, TextKit collapses a container's outer paragraph
+    /// spacing, and `partRange` drops the trailing separator newline — so an item measures the
+    /// same alone as it lays out inside any slice.
     private func splittableList(_ component: DocumentComponent, width: CGFloat, target: CGFloat)
         -> (heights: [CGFloat], gaps: [CGFloat])? {
         guard case .text(let attributed) = component.content,
               let parts = component.parts, parts.count > 1 else { return nil }
-        let heights = parts.map {
-            TextComponentView.height(of: attributed.attributedSubstring(from: $0), width: width)
+        let heights = parts.indices.map { item in
+            component.partRange(item..<item + 1).map {
+                TextComponentView.height(of: attributed.attributedSubstring(from: $0),
+                                         width: width)
+            } ?? 0
         }
         guard let tallest = heights.max(), tallest <= target else { return nil }
         // The spacing laid out between two neighbouring items, which a page holding both must
