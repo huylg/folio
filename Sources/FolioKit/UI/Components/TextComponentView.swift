@@ -179,10 +179,18 @@ final class TextMeasurer {
     }
 
     func height(of attributed: NSAttributedString, width: CGFloat) -> CGFloat {
-        guard attributed.length > 0 else { return 0 }
+        size(of: attributed, width: width).height
+    }
+
+    /// The space the text actually uses at `width`: the height, and the widest laid-out line.
+    /// The width lets a container be sized to its content — narrowing it to this value cannot
+    /// change the wrapping, because every line already fits.
+    func size(of attributed: NSAttributedString, width: CGFloat) -> NSSize {
+        guard attributed.length > 0 else { return .zero }
         container.size = NSSize(width: max(1, width), height: .greatestFiniteMagnitude)
         contentStorage.textStorage?.setAttributedString(attributed)
         layoutManager.ensureLayout(for: layoutManager.documentRange)
-        return layoutManager.usageBoundsForTextContainer.height.rounded(.up)
+        let used = layoutManager.usageBoundsForTextContainer
+        return NSSize(width: used.width.rounded(.up), height: used.height.rounded(.up))
     }
 }

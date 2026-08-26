@@ -67,6 +67,19 @@ public final class DocumentViewController: NSViewController {
         documentView.scroll(toAnchor: anchor)
     }
 
+    /// The section opened by outline entry `index`, for the sidebar's press-to-peek card:
+    /// the document's own components, and the metrics they were built against, so the card
+    /// renders them exactly as this pane does.
+    ///
+    /// Strictly read-only against the built document: peeking must never move the reading
+    /// position, so nothing on this path may scroll or touch `readingAnchor`.
+    public func sectionPreview(forOutlineIndex index: Int) -> SectionPreview? {
+        guard let built = documentView?.built else { return nil }
+        let components = SectionPreviewBuilder.components(forOutlineIndex: index, in: built)
+        guard !components.isEmpty else { return nil }
+        return SectionPreview(components: components, metrics: metrics)
+    }
+
     /// Presentation mode. Unlike the CSS version, which scaled only the body size and left all
     /// chrome at fixed pixel sizes, this folds into the type ramp — so card headers, table
     /// cells, captions, and tag pills all scale together, and the measure grows with them.

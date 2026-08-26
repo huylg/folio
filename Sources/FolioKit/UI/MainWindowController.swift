@@ -123,6 +123,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     private func wireCallbacks() {
         outlineVC.onSelect = { [weak self] anchor in self?.documentVC.scrollTo(anchor: anchor) }
+        outlineVC.onPreviewContent = { [weak self] index in
+            self?.documentVC.sectionPreview(forOutlineIndex: index)
+        }
         documentVC.onHeadingChange = { [weak self] index in
             self?.outlineVC.highlight(index: index)
         }
@@ -503,6 +506,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     @objc private func settingsChanged() {
         guard let doc = currentDocument else { return }
+        // The reflow moves every section; a peek card anchored to the old layout would lie.
+        outlineVC.cancelPreview()
         documentVC.applySettingsLive()
         documentVC.render(document: doc, preserveScroll: true)
     }
