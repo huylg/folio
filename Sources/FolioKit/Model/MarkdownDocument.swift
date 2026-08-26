@@ -23,6 +23,9 @@ public struct DocumentStats {
 /// A parsed, read-only markdown document.
 public final class MarkdownDocument {
     public let url: URL
+    /// The project root the document lives in — see `ProjectRoot`. Computed once at open;
+    /// the document is an immutable snapshot, so a `.git` created later is seen on reopen.
+    public let rootURL: URL
     public let source: String
     public let frontmatter: Frontmatter
     public let body: String
@@ -33,6 +36,7 @@ public final class MarkdownDocument {
 
     public init(url: URL) throws {
         self.url = url
+        self.rootURL = ProjectRoot.detect(for: url)
         self.source = try String(contentsOf: url, encoding: .utf8)
         let (fm, body) = Frontmatter.parse(source)
         self.frontmatter = fm

@@ -17,9 +17,10 @@ public struct DocumentComponent {
         /// Prose: a paragraph, heading, list, quote, or caption. Carries its own paragraph
         /// styles, so the spacing between the blocks *inside* it is already right.
         case text(NSAttributedString)
-        /// A fenced code block: the header label, the source for the copy button, and the
+        /// A fenced code block: the header label, the source for the copy button, the fence's
+        /// declared language (which decides whether the card gets a Run button), and the
         /// syntax-highlighted lines.
-        case code(label: String, source: String, lines: NSAttributedString)
+        case code(label: String, source: String, language: String?, lines: NSAttributedString)
         /// A widget with a payload that can build and measure itself: table, equation,
         /// diagram, image, frontmatter, verbatim HTML.
         case widget(BlockPayload)
@@ -78,7 +79,7 @@ public struct DocumentComponent {
     public var copyText: String {
         switch content {
         case .text(let attributed): return attributed.string
-        case .code(let label, let source, _): return "```\(label)\n\(source)\n```"
+        case .code(let label, let source, _, _): return "```\(label)\n\(source)\n```"
         case .widget(let payload): return payload.copyText
         case .rule: return "---"
         }
@@ -115,10 +116,12 @@ public enum ComponentSplitter {
                                                  effectiveRange: nil) as? String ?? "code"
                 let source = attributed.attribute(.folioCodeSource, at: block.range.location,
                                                   effectiveRange: nil) as? String ?? ""
+                let language = attributed.attribute(.folioCodeLanguage, at: block.range.location,
+                                                    effectiveRange: nil) as? String
                 let linesRange = union(blocks[index + 1], through: blocks[end - 1])
                 components.append(DocumentComponent(
                     kind: .codeHeader,
-                    content: .code(label: label, source: source,
+                    content: .code(label: label, source: source, language: language,
                                    lines: attributed.attributedSubstring(from: linesRange)),
                     range: range
                 ))

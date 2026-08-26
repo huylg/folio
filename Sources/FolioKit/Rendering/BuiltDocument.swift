@@ -97,7 +97,7 @@ public enum BlockPayload {
     /// builder, and every consumer reads the same answer. A nil graph is an honest source card.
     case diagram(source: String, graph: DiagramGraph?)
     case frontmatter(Frontmatter)
-    case image(source: String, alt: String, base: URL)
+    case image(source: String, alt: String, base: URL, root: URL)
     /// A verbatim HTML block. Shown as a source card: silently dropping a whole block in a
     /// reader is worse than showing what the author wrote.
     case htmlBlock(String)
@@ -114,7 +114,7 @@ public enum BlockPayload {
                 return "\(key): \(value.display)"
             }
             return (["---"] + lines + ["---"]).joined(separator: "\n")
-        case .image(let source, let alt, _): return "![\(alt)](\(source))"
+        case .image(let source, let alt, _, _): return "![\(alt)](\(source))"
         case .htmlBlock(let html): return html
         }
     }

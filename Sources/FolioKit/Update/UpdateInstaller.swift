@@ -446,38 +446,10 @@ public final class UpdateInstaller: NSObject, URLSessionDownloadDelegate {
         return url
     }
 
-    /// Both streams are captured, and both are drained: a tool that fills the 64K buffer of the
-    /// pipe nobody is reading blocks forever, and `hdiutil` talks on both of them. The output is
-    /// worth having because some tools report their failures on stdout.
     @discardableResult
     static func run(_ path: String, _ arguments: [String])
         -> (status: Int32, errorText: String, outputText: String) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: path)
-        process.arguments = arguments
-        let errors = Pipe()
-        let output = Pipe()
-        process.standardError = errors
-        process.standardOutput = output
-        do {
-            try process.run()
-        } catch {
-            return (-1, error.localizedDescription, "")
-        }
-        var outputData = Data()
-        let drained = DispatchSemaphore(value: 0)
-        DispatchQueue.global().async {
-            outputData = output.fileHandleForReading.readDataToEndOfFile()
-            drained.signal()
-        }
-        let errorData = errors.fileHandleForReading.readDataToEndOfFile()
-        drained.wait()
-        process.waitUntilExit()
-        return (process.terminationStatus, text(of: errorData), text(of: outputData))
-    }
-
-    private static func text(of data: Data) -> String {
-        String(data: data, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let result = ProcessRunner.run(path, arguments)
+        return (result.status, result.errorText, result.outputText)
     }
 }

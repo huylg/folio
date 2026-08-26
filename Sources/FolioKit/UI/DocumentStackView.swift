@@ -67,6 +67,17 @@ public final class DocumentStackView: NSView {
         needsLayout = true
     }
 
+    /// Re-measures the component whose view this is and reflows the page — the path a code
+    /// card takes when its run-output panel appears or is dismissed, changing its height after
+    /// placement. Its cached height is dropped; everything else re-reads its cache entry.
+    public func remeasureComponent(containing view: NSView) {
+        let index = retained.first { $0.value === view }?.key.component
+            ?? live.first { $0.value === view }.map { componentOfPlacement[$0.key] }
+        guard let index else { return }
+        host?.sizeCache.remove(id: index)
+        invalidateMeasurement()
+    }
+
     /// Where every component sits, in the stack's own coordinates, and which spread it belongs
     /// to. Recomputed only when the width, the column count, or the document changes, so
     /// scrolling never re-measures.
@@ -606,8 +617,13 @@ public final class DocumentStackView: NSView {
             switch component.content {
             case .text(let attributed):
                 return TextComponentView.height(of: attributed, width: width)
-            case .code(_, _, let lines):
+            case .code(_, _, _, let lines):
+                // A retained card may carry a run-output panel the static measure knows
+                // nothing about.
+                let output = (self.retained[RetainKey(component: index, rows: nil)]
+                    as? CodeComponentView)?.outputPanelHeight(width: width) ?? 0
                 return CodeComponentView.height(lines: lines, width: width, metrics: metrics)
+                    + output
             case .widget(let payload):
                 return BlockViewFactory.height(for: payload, width: width,
                                                metrics: metrics, host: self.host)
@@ -795,9 +811,9 @@ public final class DocumentStackView: NSView {
             view.configure(with: content, kind: components[index].kind)
             return view
 
-        case .code(let label, let source, let lines):
-            let view = CodeComponentView(label: label, source: source, lines: lines,
-                                         metrics: metrics, host: host)
+        case .code(let label, let source, let language, let lines):
+            let view = CodeComponentView(label: label, source: source, language: language,
+                                         lines: lines, metrics: metrics, host: host)
             retained[key] = view
             return view
 

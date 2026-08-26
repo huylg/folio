@@ -19,8 +19,8 @@ public enum BlockViewFactory {
         case .frontmatter(let frontmatter):
             return FrontmatterCardView(frontmatter: frontmatter, metrics: metrics, host: host)
 
-        case .image(let source, let alt, let base):
-            return ImageBlockView(source: source, alt: alt, base: base,
+        case .image(let source, let alt, let base, let root):
+            return ImageBlockView(source: source, alt: alt, base: base, root: root,
                                   metrics: metrics, host: host)
 
         case .math(let latex, _):
@@ -51,8 +51,8 @@ public enum BlockViewFactory {
             return TableBlockView.height(spec: spec, width: width, metrics: metrics)
         case .frontmatter(let frontmatter):
             return FrontmatterCardView.height(frontmatter: frontmatter, width: width, metrics: metrics)
-        case .image(let source, let alt, let base):
-            return ImageBlockView.height(source: source, alt: alt, base: base,
+        case .image(let source, let alt, let base, let root):
+            return ImageBlockView.height(source: source, alt: alt, base: base, root: root,
                                          width: width, metrics: metrics)
         case .math(let latex, _):
             return SourceCardView.height(source: latex, width: width, metrics: metrics)

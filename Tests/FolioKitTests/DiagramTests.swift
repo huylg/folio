@@ -649,7 +649,7 @@ final class DiagramDocumentTests: XCTestCase {
             }
         }
         let labels = built.components.compactMap { component -> String? in
-            guard case .code(let label, _, _) = component.content else { return nil }
+            guard case .code(let label, _, _, _) = component.content else { return nil }
             return label
         }
         XCTAssertEqual(labels.filter { $0 == "mermaid" }.count, 5)

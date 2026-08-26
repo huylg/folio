@@ -475,6 +475,16 @@ private final class PreviewBlockHost: BlockHost {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
     }
+
+    /// A peek must never execute anything; the request is dropped like an open.
+    func blockRequestsRun(_ command: String,
+                          onOutput: @escaping (String) -> Void,
+                          completion: @escaping (ProcessRunner.Output?) -> Void) {
+        completion(nil)
+    }
+
+    /// A peek card is sized once, at presentation; nothing in it changes height afterwards.
+    func blockHeightDidChange(_ view: NSView) {}
 }
 
 /// The light veil behind a hover card, focusing the eye on it.

@@ -174,6 +174,81 @@ final class LinkRouterTests: XCTestCase {
             return XCTFail("expected external, got \(target)")
         }
     }
+
+    // MARK: Root-absolute links
+
+    /// A base that is NOT where the target lives, proving `/…` ignores it and uses the root.
+    private var elsewhere: URL {
+        fixturesDirectory.appendingPathComponent("elsewhere")
+    }
+
+    func testLeadingSlashResolvesAgainstTheRootNotTheBase() {
+        let target = LinkRouter.resolve("/deep-headings.md", relativeTo: elsewhere,
+                                        root: fixturesDirectory)
+        guard case .markdown(let url, let fragment) = target else {
+            return XCTFail("expected a markdown target, got \(target)")
+        }
+        XCTAssertEqual(url.standardizedFileURL.path,
+                       fixturesDirectory.appendingPathComponent("deep-headings.md")
+                           .standardizedFileURL.path)
+        XCTAssertNil(fragment)
+    }
+
+    func testRootAbsoluteLinkCarriesItsFragment() {
+        let target = LinkRouter.resolve("/deep-headings.md#three", relativeTo: elsewhere,
+                                        root: fixturesDirectory)
+        guard case .markdown(_, let fragment) = target else {
+            return XCTFail("expected a markdown target, got \(target)")
+        }
+        XCTAssertEqual(fragment, "three")
+    }
+
+    func testRootAbsoluteLinkPercentDecodes() {
+        let target = LinkRouter.resolve("/spaced%20link.md", relativeTo: elsewhere,
+                                        root: fixturesDirectory)
+        guard case .markdown(let url, _) = target else {
+            return XCTFail("expected a markdown target, got \(target)")
+        }
+        XCTAssertEqual(url.lastPathComponent, "spaced link.md")
+    }
+
+    func testBrokenRootAbsoluteLinkIsMissing() {
+        guard case .missing = LinkRouter.resolve("/nope.md", relativeTo: fixturesDirectory,
+                                                 root: fixturesDirectory) else {
+            return XCTFail("a nonexistent root-absolute path should classify as missing")
+        }
+    }
+
+    func testRelativeLinkIgnoresTheRoot() {
+        let bogusRoot = URL(fileURLWithPath: "/definitely/not/here")
+        let target = LinkRouter.resolve("deep-headings.md", relativeTo: fixturesDirectory,
+                                        root: bogusRoot)
+        guard case .markdown(let url, _) = target else {
+            return XCTFail("expected a markdown target, got \(target)")
+        }
+        XCTAssertEqual(url.lastPathComponent, "deep-headings.md")
+    }
+
+    /// Without a root, a leading slash keeps meaning the filesystem, as it always did.
+    func testAbsolutePathWithoutARootKeepsFilesystemSemantics() {
+        let target = LinkRouter.resolve("/bin/sh", relativeTo: fixturesDirectory)
+        guard case .file(let url) = target else {
+            return XCTFail("expected a file target, got \(target)")
+        }
+        XCTAssertEqual(url.path, "/bin/sh")
+    }
+
+    /// "//x" must not fall back to filesystem-absolute and escape the root.
+    func testDoubledSlashesStayInsideTheRoot() {
+        let target = LinkRouter.resolve("//deep-headings.md", relativeTo: elsewhere,
+                                        root: fixturesDirectory)
+        guard case .markdown(let url, _) = target else {
+            return XCTFail("expected a markdown target, got \(target)")
+        }
+        XCTAssertEqual(url.standardizedFileURL.path,
+                       fixturesDirectory.appendingPathComponent("deep-headings.md")
+                           .standardizedFileURL.path)
+    }
 }
 
 final class BuilderStructureTests: XCTestCase {
@@ -231,7 +306,7 @@ final class BuilderStructureTests: XCTestCase {
         let code = built.components.filter { if case .code = $0.content { return true } else { return false } }
         XCTAssertFalse(code.isEmpty, "fixture should contain a fenced code block")
         for card in code {
-            guard case .code(_, let source, let lines) = card.content else { return }
+            guard case .code(_, let source, _, let lines) = card.content else { return }
             XCTAssertGreaterThan(source.components(separatedBy: "\n").count, 1)
             XCTAssertGreaterThan(lines.length, 0, "the card has no highlighted text")
         }
@@ -292,7 +367,7 @@ final class HTMLCommentTests: XCTestCase {
 
     func testCommentOnlyBlocksAreDropped() throws {
         let cards = try components().compactMap { component -> String? in
-            guard case .code(let label, let source, _) = component.content, label == "html"
+            guard case .code(let label, let source, _, _) = component.content, label == "html"
             else { return nil }
             return source
         }
@@ -307,7 +382,7 @@ final class HTMLCommentTests: XCTestCase {
     /// author wrote.
     func testBlocksWithRealMarkupSurvive() throws {
         let cards = try components().compactMap { component -> String? in
-            guard case .code(let label, let source, _) = component.content, label == "html"
+            guard case .code(let label, let source, _, _) = component.content, label == "html"
             else { return nil }
             return source
         }
