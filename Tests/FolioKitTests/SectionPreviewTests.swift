@@ -1,4 +1,5 @@
 import AppKit
+import WebKit
 import XCTest
 @testable import FolioKit
 
@@ -253,6 +254,10 @@ final class OutlinePressIntegrationTests: XCTestCase {
         let document = try XCTUnwrap(scroll.documentView)
         XCTAssertGreaterThan(document.frame.height, scroll.contentSize.height,
                              "long content must overflow the card and be scrollable")
+        XCTAssertLessThanOrEqual(
+            document.frame.width, scroll.contentSize.width - PeekPreviewPanel.scrollerGutter,
+            "scrolling content must step back from under the overlay scroller"
+        )
 
         // Scroll to the end: everything must be reachable, and the "more below" fade must go.
         scroll.contentView.scroll(to: NSPoint(
@@ -325,22 +330,398 @@ final class OutlinePressIntegrationTests: XCTestCase {
     }
 }
 
+/// Hover-to-peek on links in the reading pane: the same card the outline shows, anchored to
+/// the hovered link, resolved through the document's own anchors.
+final class LinkPeekIntegrationTests: XCTestCase {
+
+    override func setUp() {
+        super.setUp()
+        // The machine's real pointer must not haunt the hover checks: wherever it happens to
+        // rest, it is never "inside the card" unless a test says so.
+        PeekPreviewPanel.pointerLocation = { NSPoint(x: -100_000, y: -100_000) }
+    }
+
+    override func tearDown() {
+        TextComponentView.linkHoverDelay = 0.4
+        NativeDocumentView.linkHoverHideGrace = 0.15
+        PeekPreviewPanel.pointerLocation = { NSEvent.mouseLocation }
+        super.tearDown()
+    }
+
+    /// The link paragraph sits above two sections so the peek target (Gamma, outline index 1)
+    /// is not the section already being read — a quick click has somewhere to report.
+    private let linkSource = """
+    Jump to [the gamma section](#gamma) or [the suite](https://example.com) first.
+
+    ## Beta
+    Beta body.
+
+    ## Gamma
+    Gamma body paragraph, the one the card must show.
+
+    | a | b |
+    |---|---|
+    | 1 | 2 |
+
+    ## Omega
+    """
+
+    private func pane() throws -> (NativeDocumentView, NSWindow) {
+        let document = try makeDocument(linkSource)
+        let view = NativeDocumentView(metrics: previewTestMetrics)
+        view.animatesNavigation = false
+        view.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
+        let window = TestWindow(contentRect: view.frame, styleMask: [.titled],
+                                backing: .buffered, defer: false)
+        window.contentView = view
+        window.orderBack(nil)
+        view.render(document: document, metrics: previewTestMetrics)
+        view.layoutSubtreeIfNeeded()
+        return (view, window)
+    }
+
+    /// The populated component holding the fixture's link, and the link's rect in its
+    /// coordinates.
+    private func linkView(in view: NativeDocumentView) throws -> (TextComponentView, NSRect) {
+        let text = try XCTUnwrap(
+            view.stackView.subviews
+                .compactMap { $0 as? TextComponentView }
+                .first { $0.linkRectForTests(destination: "#gamma") != nil },
+            "the paragraph holding the link must be populated"
+        )
+        return (text, try XCTUnwrap(text.linkRectForTests(destination: "#gamma")))
+    }
+
+    private func spin(_ seconds: TimeInterval) {
+        RunLoop.main.run(until: Date().addingTimeInterval(seconds))
+    }
+
+    func testOnlyDestinationsWithSomethingToShowCanPeek() throws {
+        let (view, _) = try pane()
+        XCTAssertTrue(view.component(view, canPeekLink: "#gamma"))
+        XCTAssertFalse(view.component(view, canPeekLink: "#omega"),
+                       "a section with no body has nothing to peek")
+        XCTAssertFalse(view.component(view, canPeekLink: "#nowhere"))
+        XCTAssertTrue(view.component(view, canPeekLink: "https://example.com"),
+                      "an http(s) link peeks the page in a web view")
+        XCTAssertFalse(view.component(view, canPeekLink: "mailto:someone@example.com"),
+                       "there is no page behind a mailto to show")
+        XCTAssertFalse(view.component(view, canPeekLink: "no-such-file.md#gamma"),
+                       "a link to a file that does not exist has nothing to peek")
+    }
+
+    func testHoverOnHttpsLinkPeeksAWebView() throws {
+        TextComponentView.linkHoverDelay = 0.02
+        let (view, window) = try pane()
+        let text = try XCTUnwrap(
+            view.stackView.subviews
+                .compactMap { $0 as? TextComponentView }
+                .first { $0.linkRectForTests(destination: "https://example.com") != nil }
+        )
+        let rect = try XCTUnwrap(text.linkRectForTests(destination: "https://example.com"))
+
+        var reported: [Int] = []
+        view.onHeadingChange = { reported.append($0) }
+
+        text.hoverMoved(to: NSPoint(x: rect.midX, y: rect.midY))
+        spin(0.08)
+        let card = try XCTUnwrap(window.childWindows?.first?.contentView,
+                                 "the hover must present the card")
+        func contains<T: NSView>(_ type: T.Type, in view: NSView) -> Bool {
+            view is T || view.subviews.contains { contains(type, in: $0) }
+        }
+        XCTAssertTrue(contains(WKWebView.self, in: card),
+                      "an external page previews in a web view")
+        XCTAssertTrue(reported.isEmpty, "a web peek must not navigate the document")
+
+        view.linkPeek.hide()
+        spin(0.3)
+    }
+
+    /// Navigation belongs to the click alone, delivered through NSTextView's own
+    /// `clicked(onLink:)`. Called directly: synthesized events cannot drive the text view's
+    /// stock mouse-tracking loop without hanging the test.
+    func testClickOnLinkStillNavigates() throws {
+        let (view, window) = try pane()
+        let (text, _) = try linkView(in: view)
+
+        var reported: [Int] = []
+        view.onHeadingChange = { reported.append($0) }
+
+        text.clicked(onLink: "#gamma", at: 0)
+
+        XCTAssertEqual(window.childWindows?.count ?? 0, 0,
+                       "a click must not present a card")
+        XCTAssertEqual(reported.last, 1, "a click must still navigate to Gamma")
+    }
+
+    // MARK: Hover
+
+    func testHoverOnLinkShowsTheCardWithoutBackdropOrNavigation() throws {
+        TextComponentView.linkHoverDelay = 0.02
+        let (view, window) = try pane()
+        let (text, rect) = try linkView(in: view)
+
+        var reported: [Int] = []
+        view.onHeadingChange = { reported.append($0) }
+        let origin = view.scrollView.contentView.bounds.origin
+        let overlays = window.contentView?.subviews.count ?? 0
+
+        text.hoverMoved(to: NSPoint(x: rect.midX, y: rect.midY))
+        spin(0.08)
+        XCTAssertEqual(window.childWindows?.count, 1, "resting on the link must show the card")
+        XCTAssertFalse(view.linkPeek.presentsBackdrop, "a hover glance must not pin")
+        XCTAssertEqual(window.contentView?.subviews.count, overlays,
+                       "a hover must not dim the pane — nothing beneath it changes")
+        XCTAssertEqual(view.scrollView.contentView.bounds.origin, origin,
+                       "a hover must never move the reading position")
+        XCTAssertTrue(reported.isEmpty, "a hover must not report a navigation")
+
+        // The card draws the target section with the reading engine: Gamma holds a table, so
+        // the card must contain the page's own TableBlockView.
+        let card = try XCTUnwrap(window.childWindows?.first?.contentView)
+        let scroll = try XCTUnwrap(card.subviews.compactMap { $0 as? NSScrollView }.first)
+        let stack = try XCTUnwrap(scroll.documentView as? DocumentStackView)
+        func contains<T: NSView>(_ type: T.Type, in view: NSView) -> Bool {
+            view is T || view.subviews.contains { contains(type, in: $0) }
+        }
+        XCTAssertTrue(contains(TableBlockView.self, in: stack),
+                      "the card must show Gamma's table through the reading engine")
+
+        view.linkPeek.hide()
+        spin(0.3)
+    }
+
+    func testPointerLeavingTheLinkHidesTheHoverCard() throws {
+        TextComponentView.linkHoverDelay = 0.02
+        NativeDocumentView.linkHoverHideGrace = 0.02
+        let (view, window) = try pane()
+        let (text, rect) = try linkView(in: view)
+
+        text.hoverMoved(to: NSPoint(x: rect.midX, y: rect.midY))
+        spin(0.08)
+        XCTAssertTrue(view.linkPeek.isShown)
+
+        text.hoverMoved(to: NSPoint(x: rect.midX, y: rect.maxY + 60))
+        spin(0.4)
+        XCTAssertEqual(window.childWindows?.count ?? 0, 0,
+                       "the card must go once the pointer has moved on")
+    }
+
+    func testPointerOnTheCardKeepsTheHoverCardUp() throws {
+        TextComponentView.linkHoverDelay = 0.02
+        NativeDocumentView.linkHoverHideGrace = 0.02
+        let (view, window) = try pane()
+        let (text, rect) = try linkView(in: view)
+
+        text.hoverMoved(to: NSPoint(x: rect.midX, y: rect.midY))
+        spin(0.08)
+        let card = try XCTUnwrap(window.childWindows?.first)
+        // The pointer travels from the link onto the card.
+        PeekPreviewPanel.pointerLocation = {
+            NSPoint(x: card.frame.midX, y: card.frame.midY)
+        }
+
+        text.hoverMoved(to: NSPoint(x: rect.midX, y: rect.maxY + 60))
+        spin(0.2)
+        XCTAssertTrue(view.linkPeek.isShown,
+                      "a card the pointer is reading must stay up")
+
+        // And once the pointer leaves the card too, the card goes.
+        PeekPreviewPanel.pointerLocation = { NSPoint(x: -100_000, y: -100_000) }
+        view.componentHoverLeftLink(text)
+        spin(0.4)
+        XCTAssertEqual(window.childWindows?.count ?? 0, 0)
+    }
+
+    /// The click is delivered through `clicked(onLink:)` directly — synthesized events cannot
+    /// drive NSTextView's stock mouse-tracking loop without hanging the test.
+    func testClickWhileHoverCardIsUpNavigatesAndDismisses() throws {
+        TextComponentView.linkHoverDelay = 0.02
+        let (view, window) = try pane()
+        let (text, rect) = try linkView(in: view)
+
+        text.hoverMoved(to: NSPoint(x: rect.midX, y: rect.midY))
+        spin(0.08)
+        XCTAssertTrue(view.linkPeek.isShown)
+
+        var reported: [Int] = []
+        view.onHeadingChange = { reported.append($0) }
+        text.clicked(onLink: "#gamma", at: 0)
+        spin(0.3)
+
+        XCTAssertEqual(reported.last, 1, "the click must still navigate to Gamma")
+        XCTAssertEqual(window.childWindows?.count ?? 0, 0,
+                       "and the glance must not outlive the decision to go")
+    }
+}
+
+/// Peeks through relative markdown links — `foo.md`, `foo.md#section` — which parse and build
+/// the target file. The vault's own links are percent-encoded and hold spaces, so the fixture
+/// file does too.
+final class RelativeFilePeekTests: XCTestCase {
+
+    override func setUp() {
+        super.setUp()
+        // The machine's real pointer must not haunt the hover checks: wherever it happens to
+        // rest, it is never "inside the card" unless a test says so.
+        PeekPreviewPanel.pointerLocation = { NSPoint(x: -100_000, y: -100_000) }
+    }
+
+    override func tearDown() {
+        TextComponentView.linkHoverDelay = 0.4
+        PeekPreviewPanel.pointerLocation = { NSEvent.mouseLocation }
+        super.tearDown()
+    }
+
+    private let targetSource = """
+    # Kernel notes
+
+    Opening paragraph about dispatch.
+
+    ## Gamma
+    Gamma body, the one the fragment link must show.
+
+    | a | b |
+    |---|---|
+    | 1 | 2 |
+    """
+
+    private let linkSource = """
+    See [the notes](Kernel%20notes.md) and \
+    [gamma](Kernel%20notes.md#gamma) in the vault.
+    """
+
+    /// A vault directory of its own, so the relative links resolve deterministically.
+    private func pane() throws -> (NativeDocumentView, NSWindow) {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("link-peek-vault-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try targetSource.write(to: dir.appendingPathComponent("Kernel notes.md"),
+                               atomically: true, encoding: .utf8)
+        let sourceURL = dir.appendingPathComponent("source.md")
+        try linkSource.write(to: sourceURL, atomically: true, encoding: .utf8)
+        let document = try MarkdownDocument(url: sourceURL)
+
+        let view = NativeDocumentView(metrics: previewTestMetrics)
+        view.animatesNavigation = false
+        view.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
+        let window = TestWindow(contentRect: view.frame, styleMask: [.titled],
+                                backing: .buffered, defer: false)
+        window.contentView = view
+        window.orderBack(nil)
+        view.render(document: document, metrics: previewTestMetrics)
+        view.layoutSubtreeIfNeeded()
+        return (view, window)
+    }
+
+    private func linkView(
+        in view: NativeDocumentView, destination: String
+    ) throws -> (TextComponentView, NSRect) {
+        let text = try XCTUnwrap(
+            view.stackView.subviews
+                .compactMap { $0 as? TextComponentView }
+                .first { $0.linkRectForTests(destination: destination) != nil }
+        )
+        return (text, try XCTUnwrap(text.linkRectForTests(destination: destination)))
+    }
+
+    private func hoverCard(
+        on destination: String, view: NativeDocumentView, window: NSWindow
+    ) throws -> NSView {
+        let (text, rect) = try linkView(in: view, destination: destination)
+        text.hoverMoved(to: NSPoint(x: rect.midX, y: rect.midY))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.08))
+        return try XCTUnwrap(window.childWindows?.first?.contentView,
+                             "the hover must present the card")
+    }
+
+    private func containsText(_ needle: String, in view: NSView) -> Bool {
+        if let text = view as? NSTextView, text.string.contains(needle) { return true }
+        return view.subviews.contains { containsText(needle, in: $0) }
+    }
+
+    private func contains<T: NSView>(_ type: T.Type, in view: NSView) -> Bool {
+        view is T || view.subviews.contains { contains(type, in: $0) }
+    }
+
+    func testRelativeMarkdownLinksCanPeek() throws {
+        let (view, _) = try pane()
+        XCTAssertTrue(view.component(view, canPeekLink: "Kernel%20notes.md"),
+                      "a percent-encoded relative link must peek the file")
+        XCTAssertTrue(view.component(view, canPeekLink: "Kernel notes.md"),
+                      "and the literal spelling must resolve to the same file")
+        XCTAssertTrue(view.component(view, canPeekLink: "Kernel%20notes.md#gamma"))
+        XCTAssertTrue(view.component(view, canPeekLink: "Kernel%20notes.md#no-such-anchor"),
+                      "a fragment the target lacks still peeks the document itself")
+        XCTAssertFalse(view.component(view, canPeekLink: "missing.md"))
+    }
+
+    func testFileLinkPeeksTheTargetsOpeningContent() throws {
+        TextComponentView.linkHoverDelay = 0.02
+        let (view, window) = try pane()
+        let card = try hoverCard(on: "Kernel%20notes.md", view: view, window: window)
+        XCTAssertTrue(containsText("Opening paragraph about dispatch", in: card),
+                      "the card must open on the front of the target document")
+        view.linkPeek.hide()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+    }
+
+    func testFragmentIntoAnotherFilePeeksThatSection() throws {
+        TextComponentView.linkHoverDelay = 0.02
+        let (view, window) = try pane()
+        let card = try hoverCard(on: "Kernel%20notes.md#gamma", view: view, window: window)
+        XCTAssertTrue(contains(TableBlockView.self, in: card),
+                      "the card must show Gamma's table through the reading engine")
+        XCTAssertFalse(containsText("Opening paragraph about dispatch", in: card),
+                       "and only Gamma — not the front of the document")
+        view.linkPeek.hide()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+    }
+}
+
+/// The link hit test that gates the whole gesture.
+final class LinkHitTests: XCTestCase {
+
+    func testBlankSpacePastALinkLineIsNotALinkHit() throws {
+        let view = TextComponentView()
+        let attributed = NSMutableAttributedString(
+            string: "See ",
+            attributes: [.font: NSFont.systemFont(ofSize: 12),
+                         .foregroundColor: NSColor.labelColor]
+        )
+        // The line ends with the link on purpose: the insertion index for the blank space past
+        // it resolves to the link's last character, and only the laid-out rect says otherwise.
+        attributed.append(NSAttributedString(string: "gamma", attributes: [
+            .font: NSFont.systemFont(ofSize: 12), .link: "#gamma",
+        ]))
+        view.setFrameSize(NSSize(width: 300, height: 40))
+        view.configure(with: attributed, kind: .paragraph)
+
+        let rect = try XCTUnwrap(view.linkRectForTests(destination: "#gamma"))
+        XCTAssertEqual(view.link(at: NSPoint(x: rect.midX, y: rect.midY))?.destination,
+                       "#gamma")
+        XCTAssertNil(view.link(at: NSPoint(x: rect.maxX + 40, y: rect.midY)),
+                     "blank space past the line must not read as the link")
+    }
+}
+
 final class OutlinePressPreviewStateTests: XCTestCase {
 
     func testQuickPressAndReleaseIsAClick() {
-        let press = OutlinePressPreviewState()
+        let press = PressPeekState()
         press.pressBegan(row: 3)
         XCTAssertEqual(press.released(pointerRow: 3), .click(3))
     }
 
     func testReleaseOnAnotherRowWithoutPreviewIsNothing() {
-        let press = OutlinePressPreviewState()
+        let press = PressPeekState()
         press.pressBegan(row: 3)
         XCTAssertEqual(press.released(pointerRow: 5), .none)
     }
 
     func testHoldShowsAndReleasePinsWithoutClicking() {
-        let press = OutlinePressPreviewState()
+        let press = PressPeekState()
         press.pressBegan(row: 3)
         XCTAssertEqual(press.holdFired(pointerRow: 3), .show(3))
         XCTAssertEqual(press.released(pointerRow: 3), .pin,
@@ -348,7 +729,7 @@ final class OutlinePressPreviewStateTests: XCTestCase {
     }
 
     func testForceClickShowsImmediatelyAndOnlyOnce() {
-        let press = OutlinePressPreviewState()
+        let press = PressPeekState()
         press.pressBegan(row: 2)
         XCTAssertEqual(press.forceClicked(pointerRow: 2), .show(2))
         XCTAssertEqual(press.holdFired(pointerRow: 2), .none,
@@ -356,7 +737,7 @@ final class OutlinePressPreviewStateTests: XCTestCase {
     }
 
     func testScrubUpdatesAndPointerOffRowsHides() {
-        let press = OutlinePressPreviewState()
+        let press = PressPeekState()
         press.pressBegan(row: 1)
         XCTAssertEqual(press.holdFired(pointerRow: 1), .show(1))
         XCTAssertEqual(press.pointerMoved(toRow: 2), .update(2))
@@ -366,13 +747,13 @@ final class OutlinePressPreviewStateTests: XCTestCase {
     }
 
     func testMovesBeforeTheThresholdDoNothing() {
-        let press = OutlinePressPreviewState()
+        let press = PressPeekState()
         press.pressBegan(row: 1)
         XCTAssertEqual(press.pointerMoved(toRow: 2), .none)
     }
 
     func testCancelEndsThePressSilently() {
-        let press = OutlinePressPreviewState()
+        let press = PressPeekState()
         press.pressBegan(row: 1)
         _ = press.holdFired(pointerRow: 1)
         press.cancel()
@@ -380,7 +761,7 @@ final class OutlinePressPreviewStateTests: XCTestCase {
     }
 
     func testHoldAfterCancelDoesNotShow() {
-        let press = OutlinePressPreviewState()
+        let press = PressPeekState()
         press.pressBegan(row: 1)
         press.cancel()
         XCTAssertEqual(press.holdFired(pointerRow: 1), .none,

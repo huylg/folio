@@ -37,6 +37,20 @@ public final class NativeDocumentView: NSView {
     public let diagramLayouts = DiagramLayoutCache()
     public var pendingWorkCount = 0
 
+    /// The peek card for a hovered link — the same panel the sidebar's outline uses, anchored
+    /// to the link's own rect.
+    let linkPeek = PeekPreviewPanel()
+    /// The component whose hover summoned the card, so dismissal can end the hover too.
+    private weak var peekingComponent: TextComponentView?
+    /// How long a hover card waits after the pointer leaves the link before hiding, so the
+    /// pointer can cross the gap onto the card. A `static var` so tests can zero it.
+    static var linkHoverHideGrace: TimeInterval = 0.15
+    /// The pending grace-period hide, cancelled by anything that re-claims the card.
+    private var hoverHideWork: DispatchWorkItem?
+    /// Relative-link peek targets, parsed and built once per pane render — see
+    /// `builtDocument(at:)`.
+    private var peekTargetCache: [URL: (MarkdownDocument, BuiltDocument)] = [:]
+
     /// Component index → index into `built.headings`, so the outline can be tracked in the
     /// stack's own geometry rather than in character offsets.
     private var headingComponents: [(component: Int, heading: Int)] = []
@@ -78,6 +92,14 @@ public final class NativeDocumentView: NSView {
 
         stackView.host = self
         stackView.linkDelegate = self
+        stackView.linkPeekDelegate = self
+        linkPeek.onDismissRequest = { [weak self] in self?.dismissLinkPeek() }
+        // A hover card being read stays; the pointer leaving it lets it go — through the same
+        // grace as leaving the link, so a round trip back to the link keeps the card up.
+        linkPeek.onCardHoverChange = { [weak self] inside in
+            guard let self, !inside else { return }
+            scheduleHoverHide()
+        }
 
         scrollView.documentView = stackView
         scrollView.hasVerticalScroller = true
@@ -146,6 +168,10 @@ public final class NativeDocumentView: NSView {
 
     private func install(_ built: BuiltDocument, document: MarkdownDocument) {
         self.built = built
+        // A new build invalidates both the card's content and the link it was anchored to —
+        // and the cached link targets were built against the old metrics.
+        dismissLinkPeek()
+        peekTargetCache.removeAll()
         sizeCache.removeAll()
         diagramLayouts.removeAll()
 
@@ -183,6 +209,10 @@ public final class NativeDocumentView: NSView {
 
     public func updateMetrics(_ metrics: DocumentMetrics) {
         self.metrics = metrics
+        // The reflow moves every link; a card anchored to the old layout would lie. The cached
+        // link targets go with it — they were attributed against the old metrics.
+        dismissLinkPeek()
+        peekTargetCache.removeAll()
         sizeCache.removeAll()
         diagramLayouts.removeAll()
         stackView.updateMetrics(metrics)
@@ -635,6 +665,9 @@ public final class NativeDocumentView: NSView {
     }
 
     @objc private func viewportChanged() {
+        // A scroll moves the link a hover card is anchored to; the card must not stay behind
+        // pointing at nothing.
+        if linkPeek.isShown, !linkPeek.presentsBackdrop { dismissLinkPeek() }
         // The scrollers do not follow an animated `boundsOrigin` on their own.
         if isNavigating { scrollView.reflectScrolledClipView(scrollView.contentView) }
         stackView.populateVisible()
@@ -807,6 +840,9 @@ public final class NativeDocumentView: NSView {
 
 extension NativeDocumentView: ComponentLinkDelegate {
     public func component(_ view: NSView, didClickLink destination: String) {
+        // A navigation closes any peek: the card was a look at the destination, and the click
+        // is the decision to actually go.
+        dismissLinkPeek()
         route(destination)
     }
 
@@ -825,6 +861,154 @@ extension NativeDocumentView: ComponentLinkDelegate {
             // status bar is gone.
             NSSound.beep()
         }
+    }
+}
+
+// MARK: - Link peek
+
+/// Resting the pointer on an internal link peeks its section the way the sidebar's outline
+/// does, in the same card — as a glance, with no backdrop.
+///
+/// The path is strictly read-only against the built document: a peek must never move the
+/// reading position, so nothing here may scroll or touch `readingAnchor`, `navigationTarget`,
+/// or `pendingFlash`. Navigation still belongs to the click alone, which arrives through
+/// `component(_:didClickLink:)` exactly as it always did.
+extension NativeDocumentView: ComponentLinkPeekDelegate {
+
+    /// What a link destination resolves to for the peek card: a section drawn by the reading
+    /// engine, or a live web page.
+    private enum LinkPeekTarget {
+        case section(SectionPreview, title: String)
+        case web(URL)
+    }
+
+    public func component(_ view: NSView, canPeekLink destination: String) -> Bool {
+        linkPeekTarget(for: destination) != nil
+    }
+
+    public func component(_ view: NSView, hoverPeekLink destination: String,
+                          anchoredTo rect: NSRect) {
+        guard let window, let target = linkPeekTarget(for: destination) else { return }
+        hoverHideWork?.cancel()
+        peekingComponent = view as? TextComponentView
+        show(target, anchoredTo: rect, of: view, in: window, backdrop: false)
+    }
+
+    private func show(_ target: LinkPeekTarget, anchoredTo rect: NSRect, of view: NSView,
+                      in window: NSWindow, backdrop: Bool) {
+        let screenRect = window.convertToScreen(view.convert(rect, to: nil))
+        switch target {
+        case .section(let preview, let title):
+            linkPeek.show(preview, title: title, anchoredTo: screenRect, in: window,
+                          backdrop: backdrop)
+        case .web(let url):
+            linkPeek.showWeb(url, anchoredTo: screenRect, in: window, backdrop: backdrop)
+        }
+    }
+
+    public func componentHoverLeftLink(_ view: NSView) {
+        scheduleHoverHide()
+    }
+
+    /// Hides a hover card once the pointer has settled somewhere that is neither the link nor
+    /// the card. Deferred by a grace period rather than immediate, because the honest reading
+    /// of "left the link" often is "on its way to the card".
+    private func scheduleHoverHide() {
+        guard linkPeek.isShown, !linkPeek.presentsBackdrop else { return }
+        hoverHideWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, linkPeek.isShown, !linkPeek.presentsBackdrop,
+                  !linkPeek.isPointerInsideCard else { return }
+            dismissLinkPeek()
+        }
+        hoverHideWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.linkHoverHideGrace, execute: work)
+    }
+
+    /// What a link destination peeks.
+    ///
+    /// A `#fragment` peeks that section of this document; a relative markdown link peeks the
+    /// target file — the linked section when a fragment names one it has, its opening content
+    /// otherwise; an http(s) URL peeks the page itself in a web view. Everything else —
+    /// mailto, non-markdown files, missing paths — returns nil, which keeps the whole gesture
+    /// off it: those clicks behave exactly as before.
+    private func linkPeekTarget(for destination: String) -> LinkPeekTarget? {
+        guard let built, let document else { return nil }
+        let base = document.url.deletingLastPathComponent()
+        switch LinkRouter.resolve(destination, relativeTo: base) {
+        case .external(let url):
+            guard let scheme = url.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https" else { return nil }
+            return .web(url)
+        case .fragment(let anchor):
+            return sectionContent(anchor: anchor, in: built, of: document)
+        case .markdown(let url, let fragment):
+            // A link back into this file is the fragment case wearing a filename.
+            if url.standardizedFileURL == document.url.standardizedFileURL {
+                if let fragment { return sectionContent(anchor: fragment, in: built,
+                                                        of: document) }
+                return leadingContent(in: built, of: document)
+            }
+            guard let (target, targetBuilt) = builtDocument(at: url) else { return nil }
+            if let fragment,
+               let section = sectionContent(anchor: fragment, in: targetBuilt, of: target) {
+                return section
+            }
+            // No fragment, or one the target does not have: the front of the document still
+            // answers "what is behind this link".
+            return leadingContent(in: targetBuilt, of: target)
+        case .file, .missing:
+            return nil
+        }
+    }
+
+    /// The section `anchor` opens in `document`, or nil when it has no body — the link's own
+    /// text already names it.
+    private func sectionContent(
+        anchor: String, in built: BuiltDocument, of document: MarkdownDocument
+    ) -> LinkPeekTarget? {
+        guard let range = built.anchors[anchor],
+              let heading = built.headingIndex(at: range.location),
+              document.outline.indices.contains(heading)
+        else { return nil }
+        let components = SectionPreviewBuilder.components(forOutlineIndex: heading, in: built)
+        guard !components.isEmpty else { return nil }
+        return .section(SectionPreview(components: components, metrics: metrics),
+                        title: document.outline[heading].title)
+    }
+
+    private func leadingContent(
+        in built: BuiltDocument, of document: MarkdownDocument
+    ) -> LinkPeekTarget? {
+        let components = SectionPreviewBuilder.leadingComponents(in: built)
+        guard !components.isEmpty else { return nil }
+        return .section(SectionPreview(components: components, metrics: metrics),
+                        title: document.title)
+    }
+
+    /// The parsed-and-built target of a relative link, cached by URL.
+    ///
+    /// Cached because `canPeekLink` runs on every mouse-down and every hover that crosses onto
+    /// a link — parsing and attributing the target once per gesture would hitch the pointer.
+    /// The cache lives until this pane re-renders (see `install`), which is also what
+    /// re-derives the metrics the builds were made against.
+    private func builtDocument(at url: URL) -> (MarkdownDocument, BuiltDocument)? {
+        let key = url.standardizedFileURL
+        if let cached = peekTargetCache[key] { return cached }
+        guard let target = try? MarkdownDocument(url: key) else { return nil }
+        let built = AttributedDocumentBuilder(document: target, metrics: metrics).build()
+        peekTargetCache[key] = (target, built)
+        return (target, built)
+    }
+
+    /// Ends the whole peek: the card, and any hover still in flight — a dismissal must not
+    /// leave a hovered link able to re-summon the card it just closed.
+    private func dismissLinkPeek() {
+        hoverHideWork?.cancel()
+        hoverHideWork = nil
+        peekingComponent?.cancelLinkHover()
+        peekingComponent = nil
+        linkPeek.hide()
     }
 }
 

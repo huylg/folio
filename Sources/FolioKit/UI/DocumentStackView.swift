@@ -13,6 +13,9 @@ public final class DocumentStackView: NSView {
 
     public weak var host: BlockHost?
     public weak var linkDelegate: ComponentLinkDelegate?
+    /// Set only by surfaces that can peek — the reading pane. The peek card's own stack leaves
+    /// it nil, so a link inside a card can never open a card of its own.
+    public weak var linkPeekDelegate: ComponentLinkPeekDelegate?
 
     private(set) var components: [DocumentComponent] = []
     private var metrics: DocumentMetrics
@@ -784,6 +787,7 @@ public final class DocumentStackView: NSView {
         case .text(let attributed):
             let view = textPool.popLast() ?? TextComponentView()
             view.componentDelegate = linkDelegate
+            view.peekDelegate = linkPeekDelegate
             // A page of a split list holds just its own items' slice of the text.
             let content = key.rows.flatMap { rows in
                 components[index].partRange(rows).map(attributed.attributedSubstring(from:))

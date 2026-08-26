@@ -8,7 +8,7 @@ final class OutlineViewController: NSViewController, NSTableViewDataSource, NSTa
     /// section after the document re-renders.
     var onPreviewContent: ((Int) -> SectionPreview?)?
 
-    private let preview = OutlinePreviewController()
+    private let preview = PeekPreviewPanel()
     private var entries: [OutlineEntry] = []
     private var highlightedIndex = 0
     /// Every section on screen. The current one is in here too, and outranks the group marking.
@@ -181,12 +181,14 @@ final class OutlineViewController: NSViewController, NSTableViewDataSource, NSTa
     /// sidebar is the dimmed layer then, and nothing dimmed should answer the pointer.
     private func previewRow(_ row: Int) {
         defer { tableView.hoverSuppressed = preview.isShown }
-        guard row >= 0, row < entries.count, let section = onPreviewContent?(row) else {
+        guard row >= 0, row < entries.count, let section = onPreviewContent?(row),
+              let window = tableView.window else {
             preview.hide()
             return
         }
+        let rowRect = tableView.convert(tableView.rect(ofRow: row), to: nil)
         preview.show(section, title: entries[row].title,
-                     anchoredToRow: row, in: tableView)
+                     anchoredTo: window.convertToScreen(rowRect), in: window)
     }
 }
 
@@ -206,7 +208,7 @@ final class OutlineTableView: NSTableView {
     /// another row; -1 means the pointer is off the rows and the card should hide.
     var onPreviewRow: ((Int) -> Void)?
 
-    private let press = OutlinePressPreviewState()
+    private let press = PressPeekState()
     private var holdTimer: Timer?
     /// The row under the pressed pointer, maintained from the press's own event stream — the
     /// pointer cannot move while the button is down without a `mouseDragged`, so this is always
@@ -372,7 +374,7 @@ final class OutlineTableView: NSTableView {
         pressPointerRow = -1
     }
 
-    private func perform(_ effect: OutlinePressPreviewState.Effect) {
+    private func perform(_ effect: PressPeekState.Effect) {
         switch effect {
         case .none:
             break
