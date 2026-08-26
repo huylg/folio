@@ -184,6 +184,20 @@ final class OutlinePressIntegrationTests: XCTestCase {
         RunLoop.main.run(until: Date().addingTimeInterval(seconds))
     }
 
+    /// Spins the run loop until `condition` holds, or the timeout passes. Fixed spins sized
+    /// on a fast machine starve the hold timer on a loaded CI runner; a condition cannot.
+    @discardableResult
+    private func waitUntil(
+        _ timeout: TimeInterval = 2, _ condition: () -> Bool
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        return condition()
+    }
+
     func testHoldShowsCardReleasePinsItAndBackdropClickDismisses() throws {
         OutlineTableView.holdDelay = 0.02
         let (controller, table, window) = try outline()
@@ -192,8 +206,8 @@ final class OutlinePressIntegrationTests: XCTestCase {
         )
 
         table.mouseDown(with: try mouseEvent(.leftMouseDown, at: rowPoint, in: window))
-        spin(0.08)
-        XCTAssertEqual(window.childWindows?.count, 1, "the hold must present the card")
+        XCTAssertTrue(waitUntil { window.childWindows?.isEmpty == false },
+                      "the hold must present the card")
         let overlays = window.contentView?.subviews.count ?? 0
         XCTAssertGreaterThan(overlays, 1, "the backdrop must dim while the card is up")
 
@@ -211,9 +225,8 @@ final class OutlinePressIntegrationTests: XCTestCase {
         // outside the card — closes the peek and goes no further.
         let outside = try mouseEvent(.leftMouseDown, at: NSPoint(x: 5, y: 5), in: window)
         window.contentView?.hitTest(NSPoint(x: 5, y: 5))?.mouseDown(with: outside)
-        spin(0.3)
-        XCTAssertEqual(window.childWindows?.count ?? 0, 0,
-                       "a click outside the card must dismiss it")
+        XCTAssertTrue(waitUntil { (window.childWindows ?? []).isEmpty },
+                      "a click outside the card must dismiss it")
         XCTAssertEqual(window.contentView?.subviews.count, overlays - 1,
                        "the backdrop must go away with the card")
         XCTAssertFalse(table.hoverSuppressed, "hover must come back once the card is gone")
@@ -231,7 +244,8 @@ final class OutlinePressIntegrationTests: XCTestCase {
             NSPoint(x: table.rect(ofRow: 1).midX, y: table.rect(ofRow: 1).midY), to: nil
         )
         table.mouseDown(with: try mouseEvent(.leftMouseDown, at: rowPoint, in: window))
-        spin(0.08)
+        XCTAssertTrue(waitUntil { window.childWindows?.isEmpty == false },
+                      "the hold must present the card")
 
         let card = try XCTUnwrap(window.childWindows?.first?.contentView)
         let scroll = try XCTUnwrap(card.subviews.compactMap { $0 as? NSScrollView }.first,
@@ -252,7 +266,7 @@ final class OutlinePressIntegrationTests: XCTestCase {
 
         table.mouseUp(with: try mouseEvent(.leftMouseUp, at: rowPoint, in: window))
         controller.cancelPreview()
-        spin(0.3)
+        waitUntil { (window.childWindows ?? []).isEmpty }
     }
 
     /// The point of the engine reuse: a section holding a table, previewed end-to-end, must
@@ -273,7 +287,8 @@ final class OutlinePressIntegrationTests: XCTestCase {
             NSPoint(x: table.rect(ofRow: 0).midX, y: table.rect(ofRow: 0).midY), to: nil
         )
         table.mouseDown(with: try mouseEvent(.leftMouseDown, at: rowPoint, in: window))
-        spin(0.1)
+        XCTAssertTrue(waitUntil { window.childWindows?.isEmpty == false },
+                      "the hold must present the card")
 
         let card = try XCTUnwrap(window.childWindows?.first?.contentView)
         let scroll = try XCTUnwrap(card.subviews.compactMap { $0 as? NSScrollView }.first)
@@ -290,7 +305,7 @@ final class OutlinePressIntegrationTests: XCTestCase {
 
         table.mouseUp(with: try mouseEvent(.leftMouseUp, at: rowPoint, in: window))
         controller.cancelPreview()
-        spin(0.3)
+        waitUntil { (window.childWindows ?? []).isEmpty }
     }
 
     func testQuickClickNavigatesWithoutShowingACard() throws {

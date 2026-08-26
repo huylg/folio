@@ -211,7 +211,10 @@ final class OutlinePreviewController {
         stackView.spreadHeight = 0
         stackView.setComponents(section.components, metrics: section.metrics)
         stackView.setFrameSize(NSSize(width: contentWidth, height: stackView.frame.height))
-        stackView.layoutSubtreeIfNeeded()
+        // Measured explicitly rather than through `layoutSubtreeIfNeeded`: the card's size is
+        // derived from this number before the panel has ever been shown, and AppKit's layout
+        // pass is not guaranteed to have visited a view that is not yet on screen.
+        stackView.ensureMeasured()
         return stackView.contentHeight
     }
 

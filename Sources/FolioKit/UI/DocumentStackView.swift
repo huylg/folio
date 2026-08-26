@@ -662,6 +662,14 @@ public final class DocumentStackView: NSView {
         populateVisible()
     }
 
+    /// Measures and positions the current components right now, without waiting for AppKit's
+    /// layout pass. The peek card sizes itself *from* the measured height before it has ever
+    /// been laid out or shown, so it cannot rely on `layout()` having run — while the reading
+    /// pane keeps to the ordinary layout path.
+    public func ensureMeasured() {
+        measure(width: contentWidth)
+    }
+
     /// Builds the placements near the viewport and retires the rest.
     public func populateVisible() {
         guard !components.isEmpty, !frames.isEmpty else { return }
