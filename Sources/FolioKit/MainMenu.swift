@@ -70,7 +70,7 @@ enum MainMenuBuilder {
 
         // View
         let view = NSMenu(title: "View")
-        let back = view.addItem(withTitle: "Back to Welcome",
+        let back = view.addItem(withTitle: "Back",
                                 action: #selector(MainWindowController.goBack(_:)),
                                 keyEquivalent: "[")
         back.keyEquivalentModifierMask = [.command]

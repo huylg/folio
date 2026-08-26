@@ -50,8 +50,23 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self, let wc else { return }
             self.windowControllers.removeAll { $0 === wc }
         }
+        wc.onOpenLinkInNewTab = { [weak self, weak wc] url, anchor in
+            guard let self, let wc else { return }
+            self.openInNewTab(url, scrollTo: anchor, from: wc)
+        }
         windowControllers.append(wc)
         return wc
+    }
+
+    /// A followed link opens beside the document it was clicked in — a tab of the same window —
+    /// leaving the source document and its reading position on screen behind it.
+    func openInNewTab(_ url: URL, scrollTo anchor: String? = nil, from source: MainWindowController) {
+        let wc = makeWindowController()
+        // Opened before the window goes on screen: the tab lands straight on its document,
+        // so its navigation history — and with it the back button — starts empty.
+        wc.openDocument(url, scrollTo: anchor)
+        source.window?.addTabbedWindow(wc.window!, ordered: .above)
+        wc.window?.makeKeyAndOrderFront(nil)
     }
 
     private var keyWindowController: MainWindowController? {

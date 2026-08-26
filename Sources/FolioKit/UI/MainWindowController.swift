@@ -16,7 +16,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// Whether the outline's opening width has been set, which happens once per window.
     private var didPlaceSidebar = false
 
+    /// The screens behind the one on show, newest last — the window's navigation history.
+    /// `openDocument` pushes the screen it leaves, `goBack` pops, and the back button exists
+    /// exactly while this is non-empty, the way a navigation bar's does at and off the root
+    /// of its stack. A window that opens straight onto a document — the tab a link opens, a
+    /// file opened from Finder — was never on any screen before it, so its history starts
+    /// empty and it shows no back button.
+    private enum Screen: Equatable {
+        case welcome
+        case document(URL)
+    }
+    private var backStack: [Screen] = []
+    var canGoBack: Bool { !backStack.isEmpty }
+
     var onClose: (() -> Void)?
+    /// Opens a linked document as a new tab of this window. Wired by `AppDelegate`, which owns
+    /// window controllers; without it a link falls back to opening in place.
+    var onOpenLinkInNewTab: ((URL, String?) -> Void)?
 
     // MARK: View controllers
     private let splitVC = NSSplitViewController()
@@ -133,7 +149,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             self?.outlineVC.markVisible(indices)
         }
         documentVC.onOpenRelativeLink = { [weak self] url, fragment in
-            self?.openDocument(url, scrollTo: fragment)
+            self?.openRelativeLink(url, scrollTo: fragment)
         }
         welcomeVC.onOpenDocument = {
             NSApp.sendAction(#selector(AppDelegate.openDocumentAction(_:)), to: nil, from: nil)
@@ -145,28 +161,66 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     /// `scrollTo` carries the fragment from a `foo.md#section` link.
     func openDocument(_ url: URL, scrollTo anchor: String? = nil) {
+        guard let doc = read(url) else { return }
+        if let departing = departingScreen { backStack.append(departing) }
+        display(doc, scrollTo: anchor)
+    }
+
+    /// The screen the reader is leaving, as a history entry — nil for a window that was not
+    /// on any screen. The welcome screen only enters the history if it was actually on
+    /// display: a window that opens straight onto a document has no previous screen, however
+    /// briefly a welcome view sat in it before it was shown.
+    private var departingScreen: Screen? {
+        if let current = currentDocument { return .document(current.url) }
+        return window?.isVisible == true ? .welcome : nil
+    }
+
+    private func read(_ url: URL) -> MarkdownDocument? {
         do {
-            let doc = try MarkdownDocument(url: url)
-            currentDocument = doc
-            // Before the render, not after: the reading pane decides its column count from its
-            // own width, and on the welcome screen it has not been laid out at all.
-            showDocumentScreen()
-            documentVC.render(document: doc)
-            outlineVC.update(document: doc)
-            NSDocumentController.shared.noteNewRecentDocumentURL(url)
-            AppSettings.shared.noteRecent(url)
-            updateTitle()
-            if let anchor {
-                // After the first layout pass, so the target's position is real.
-                DispatchQueue.main.async { [weak self] in
-                    self?.documentVC.scrollTo(anchor: anchor)
-                }
-            }
+            return try MarkdownDocument(url: url)
         } catch {
             let alert = NSAlert()
             alert.messageText = "Couldn't open document"
             alert.informativeText = "\(url.lastPathComponent): \(error.localizedDescription)"
             alert.runModal()
+            return nil
+        }
+    }
+
+    /// Puts a document on screen. History is the callers' business: `openDocument` pushes
+    /// the screen it leaves, `goBack` has already popped.
+    private func display(_ doc: MarkdownDocument, scrollTo anchor: String? = nil) {
+        currentDocument = doc
+        // Before the render, not after: the reading pane decides its column count from its
+        // own width, and on the welcome screen it has not been laid out at all.
+        showDocumentScreen()
+        documentVC.render(document: doc)
+        outlineVC.update(document: doc)
+        NSDocumentController.shared.noteNewRecentDocumentURL(doc.url)
+        AppSettings.shared.noteRecent(doc.url)
+        updateTitle()
+        updateBackButton()
+        if let anchor {
+            // After the first layout pass, so the target's position is real.
+            DispatchQueue.main.async { [weak self] in
+                self?.documentVC.scrollTo(anchor: anchor)
+            }
+        }
+    }
+
+    /// A Markdown link to another file opens as a new tab, so following a reference never loses
+    /// the reading position in the document it was clicked in. A link back into the document
+    /// already on screen is a jump within it, not a second copy.
+    func openRelativeLink(_ url: URL, scrollTo anchor: String? = nil) {
+        if let current = currentDocument,
+           url.standardizedFileURL.path == current.url.standardizedFileURL.path {
+            if let anchor { documentVC.scrollTo(anchor: anchor) }
+            return
+        }
+        if let onOpenLinkInNewTab {
+            onOpenLinkInNewTab(url, anchor)
+        } else {
+            openDocument(url, scrollTo: anchor)
         }
     }
 
@@ -279,18 +333,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// the button that reopens the sidebar.
     static let sidebarItemIdentifier = NSToolbarItem.Identifier("folioToggleSidebar")
 
-    /// The way back to the welcome screen.
+    /// The way back through the window's history.
     static let backItemIdentifier = NSToolbarItem.Identifier("folioBack")
 
     /// The back button sits *after* the tracking separator, over the document rather than over
     /// the outline: it is the reading screen the reader is leaving, not the sidebar.
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         guard toolbar.identifier == Self.documentToolbarIdentifier else { return [] }
-        return [Self.sidebarItemIdentifier, .sidebarTrackingSeparator, Self.backItemIdentifier]
+        var items: [NSToolbarItem.Identifier] = [Self.sidebarItemIdentifier,
+                                                 .sidebarTrackingSeparator]
+        if canGoBack { items.append(Self.backItemIdentifier) }
+        return items
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        toolbarDefaultItemIdentifiers(toolbar)
+        guard toolbar.identifier == Self.documentToolbarIdentifier else { return [] }
+        return [Self.sidebarItemIdentifier, .sidebarTrackingSeparator, Self.backItemIdentifier]
     }
 
     func toolbar(_ toolbar: NSToolbar,
@@ -308,9 +366,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             item.action = #selector(toggleSidebar(_:))
         case Self.backItemIdentifier:
             item.image = NSImage(systemSymbolName: "chevron.backward",
-                                 accessibilityDescription: "Back to the welcome screen")
+                                 accessibilityDescription: "Back to the previous screen")
             item.label = "Back"
-            item.toolTip = "Back to the welcome screen"
+            item.toolTip = "Back to the previous screen"
             item.action = #selector(goBack(_:))
         default:
             return nil
@@ -336,6 +394,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         window.toolbar = toolbar
     }
 
+    /// Keeps the back button in step with the history when it changes while the document
+    /// toolbar is already installed — the toolbar read its default items once, on attach.
+    private func updateBackButton() {
+        guard let toolbar = window?.toolbar,
+              toolbar.identifier == Self.documentToolbarIdentifier else { return }
+        let index = toolbar.items.firstIndex { $0.itemIdentifier == Self.backItemIdentifier }
+        if canGoBack, index == nil {
+            toolbar.insertItem(withItemIdentifier: Self.backItemIdentifier,
+                               at: toolbar.items.count)
+        } else if !canGoBack, let index {
+            toolbar.removeItem(at: index)
+        }
+    }
+
     // MARK: Actions
 
     @objc func toggleSidebar(_ sender: Any?) {
@@ -344,7 +416,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     }
 
     @objc func goBack(_ sender: Any?) {
-        showWelcomeScreen()
+        switch backStack.last {
+        case nil:
+            return
+        case .welcome:
+            backStack.removeLast()
+            showWelcomeScreen()
+        case .document(let url):
+            // Popped only once the document reads again: a failed pop — the file is gone —
+            // leaves the history, and the screen, as they were.
+            guard let doc = read(url) else { return }
+            backStack.removeLast()
+            display(doc)
+        }
     }
 
     /// Re-reads the recents list, for a change made from somewhere else — clearing them.
@@ -521,7 +605,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             menuItem.title = sidebarCollapsed ? "Show Sidebar" : "Hide Sidebar"
             return showsDocumentScreen
         case #selector(goBack(_:)):
-            return showsDocumentScreen
+            return canGoBack
         case #selector(setColumnLayout(_:)):
             menuItem.state = menuItem.tag == AppSettings.shared.columnLayout.rawValue
                 ? .on : .off
