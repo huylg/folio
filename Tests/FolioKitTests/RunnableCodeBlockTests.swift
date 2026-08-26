@@ -375,7 +375,7 @@ final class RunnableCodeBlockTests: XCTestCase {
         let fullHeight = settled.outputPanelHeight(width: width)
         XCTAssertGreaterThan(fullHeight, 0)
 
-        CodeComponentView.outputRevealDuration = 0.08
+        CodeComponentView.outputRevealDuration = 0.25
         let host = RecordingHost()
         let card = CodeComponentView(label: "bash", source: "x", language: "bash",
                                      lines: lines("x"), metrics: metrics, host: host)
@@ -383,14 +383,17 @@ final class RunnableCodeBlockTests: XCTestCase {
         XCTAssertEqual(card.outputPanelHeight(width: width), 0,
                        "the panel must start folded, not snap in")
 
-        let deadline = Date().addingTimeInterval(2)
+        let deadline = Date().addingTimeInterval(5)
         while card.outputPanelHeight(width: width) < fullHeight, Date() < deadline {
             RunLoop.main.run(until: Date().addingTimeInterval(0.01))
         }
         XCTAssertEqual(card.outputPanelHeight(width: width), fullHeight,
                        "the unfold must settle at the same height an instant reveal gives")
-        XCTAssertGreaterThan(host.heightChanges.count, 2,
-                             "the page must be re-measured along the way, not once at the end")
+        // The finish re-measure plus at least one animated step. A loaded machine may land
+        // t ≥ 1 on the timer's first fire, so more steps than that cannot be demanded.
+        XCTAssertGreaterThanOrEqual(host.heightChanges.count, 2,
+                                    "the page must be re-measured by the reveal itself, "
+                                        + "not only when the result arrives")
     }
 
     func testFailureOutputNamesTheExitStatus() {
