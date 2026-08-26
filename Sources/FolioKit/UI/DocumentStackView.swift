@@ -39,9 +39,10 @@ public final class DocumentStackView: NSView {
 
     /// The height a spread's columns are filled to, normally the viewport's.
     ///
-    /// A component taller than this is not split — it makes its own spread taller instead. Text
-    /// that flows across a column break needs line-level pagination; until that exists, a tall
-    /// table or code card is better slightly overflowing its spread than sliced in half.
+    /// A component taller than this is split only where the content has a seam of its own — a
+    /// table at its rows, a list at its items. Anything else, prose and code cards included,
+    /// would need line-level pagination to break; until that exists it takes a page of its own
+    /// instead, which is better than being sliced mid-line.
     public var spreadHeight: CGFloat = 0 {
         didSet { if spreadHeight != oldValue { invalidateMeasurement() } }
     }
@@ -63,8 +64,8 @@ public final class DocumentStackView: NSView {
     /// Placements too tall for a column, which take a page of their own across both of them.
     private var spansSpread: [Bool] = []
     private var componentOfPlacement: [Int] = []
-    /// For a table fragment: which of the table's rows it holds, and the column widths the whole
-    /// table measured to, so every page of it lines up.
+    /// For a page of a split table or list: which of the rows — or list items — it holds, and
+    /// for a table the column widths the whole table measured to, so every page of it lines up.
     private var rowsOfPlacement: [Range<Int>?] = []
     private var tableColumnsOfPlacement: [[CGFloat]?] = []
     private var firstPlacement: [Int] = []
@@ -338,11 +339,50 @@ public final class DocumentStackView: NSView {
                 if row == measured.rows.count { return }
             }
 
+            // A list is paginated at item boundaries the same way: the items are self-contained,
+            // so a column break between two bullets reads as a page turn rather than a slice —
+            // and it too starts in the room that is left.
+            if let measured = splittableList(component, width: width, target: target) {
+                var item = 0
+                var isFirst = true
+                while item < measured.heights.count {
+                    let before = isFirst ? spacing.before : 0
+                    // Enough left here for the next item? If not, turn the page first.
+                    if room(after: before) < measured.heights[item], used[column] > 0 {
+                        advance()
+                    }
+
+                    let available = room(after: before)
+                    var end = item
+                    var filled: CGFloat = 0
+                    while end < measured.heights.count {
+                        let gap = end > item ? measured.gaps[end - 1] : 0
+                        guard filled + gap + measured.heights[end] <= available else { break }
+                        filled += gap + measured.heights[end]
+                        end += 1
+                    }
+                    // A fresh column that cannot hold even one item means the list cannot be
+                    // paginated at this width; fall back to a page of its own.
+                    guard end > item else { break }
+
+                    let isLast = end == measured.heights.count
+                    emit(component: index, height: filled, before: before,
+                         after: isLast ? spacing.after : 0, spans: false,
+                         rows: item..<end, tableColumns: nil)
+                    item = end
+                    isFirst = false
+                }
+                if item == measured.heights.count { return }
+            }
+
             // Anything else that will not fit takes a page of its own across every column.
             // Keeping it in one column left the others empty and the reader staring at a table
             // running off the bottom beside a blank half-page — and for a wide table or a diagram
             // the full width is where it wanted to be anyway, which often makes it shorter.
-            if used[column] > 0 { advance() }
+            // A page of its own means a *fresh spread*, not the next column: it is emitted the
+            // whole spread wide from the spread's top, so anything already placed in an earlier
+            // column would sit underneath it.
+            if used.contains(where: { $0 > 0 }) { startNewSpread() }
             emit(component: index,
                  height: self.height(of: component, index: index, width: spanWidth),
                  before: spacing.before, after: spacing.after, spans: true,
@@ -456,6 +496,40 @@ public final class DocumentStackView: NSView {
         return measured
     }
 
+    /// A list's per-item measurements, if pagination can help it.
+    ///
+    /// `nil` for anything that is not a list of several items, and when a single item is taller
+    /// than a whole column: there is nowhere to break, and the component is better off spanning
+    /// the spread.
+    ///
+    /// A page of items is the sum of their heights plus the gaps between them, and the sum is
+    /// exact: wrapping is per paragraph, TextKit collapses a container's outer paragraph
+    /// spacing, and `partRange` drops the trailing separator newline — so an item measures the
+    /// same alone as it lays out inside any slice.
+    private func splittableList(_ component: DocumentComponent, width: CGFloat, target: CGFloat)
+        -> (heights: [CGFloat], gaps: [CGFloat])? {
+        guard case .text(let attributed) = component.content,
+              let parts = component.parts, parts.count > 1 else { return nil }
+        let heights = parts.indices.map { item in
+            component.partRange(item..<item + 1).map {
+                TextComponentView.height(of: attributed.attributedSubstring(from: $0),
+                                         width: width)
+            } ?? 0
+        }
+        guard let tallest = heights.max(), tallest <= target else { return nil }
+        // The spacing laid out between two neighbouring items, which a page holding both must
+        // include: the first one's spacing after plus the second one's spacing before.
+        func style(at location: Int) -> NSParagraphStyle? {
+            attributed.attribute(.paragraphStyle, at: location, effectiveRange: nil)
+                as? NSParagraphStyle
+        }
+        let gaps = zip(parts, parts.dropFirst()).map { part, next in
+            (style(at: NSMaxRange(part) - 1)?.paragraphSpacing ?? 0)
+                + (style(at: next.location)?.paragraphSpacingBefore ?? 0)
+        }
+        return (heights, gaps)
+    }
+
     /// How many spreads the document occupies. One in a single column.
     public var spreadCount: Int { max(1, spreadTops.count) }
 
@@ -564,11 +638,11 @@ public final class DocumentStackView: NSView {
         componentOfPlacement.reduce(0) { $1 == index ? $0 + 1 : $0 }
     }
 
-    /// The row ranges a split table's pages hold, in reading order.
+    /// The row — or list-item — ranges a split component's pages hold, in reading order.
     ///
-    /// The contract worth testing: they tile the table exactly — in order, no gap, no row on two
-    /// pages — because a paginated table that drops or repeats a row is worse than one that
-    /// overflows.
+    /// The contract worth testing: they tile the content exactly — in order, no gap, nothing on
+    /// two pages — because a paginated table or list that drops or repeats something is worse
+    /// than one that overflows.
     func rowRanges(ofComponent index: Int) -> [Range<Int>] {
         frames.indices.compactMap { placement in
             componentOfPlacement[placement] == index ? rowsOfPlacement[placement] : nil
@@ -690,7 +764,11 @@ public final class DocumentStackView: NSView {
         case .text(let attributed):
             let view = textPool.popLast() ?? TextComponentView()
             view.componentDelegate = linkDelegate
-            view.configure(with: attributed, kind: components[index].kind)
+            // A page of a split list holds just its own items' slice of the text.
+            let content = key.rows.flatMap { rows in
+                components[index].partRange(rows).map(attributed.attributedSubstring(from:))
+            } ?? attributed
+            view.configure(with: content, kind: components[index].kind)
             return view
 
         case .code(let label, let source, let lines):
