@@ -143,13 +143,22 @@ final class SectionPreviewTests: XCTestCase {
     }
 }
 
-/// The whole gesture, driven through synthesized events against a real outline in a real
-/// window: press → hold → card and dimmed backdrop appear; release → both stay; a click on
-/// the backdrop → both go away.
-final class OutlinePressIntegrationTests: XCTestCase {
+/// Hover-to-peek against a real outline in a real window: the pointer resting on a row shows
+/// the card beside it — with nothing dimmed, and no navigation — and the pointer moving on
+/// hides it. A click still navigates.
+final class OutlineHoverIntegrationTests: XCTestCase {
+
+    override func setUp() {
+        super.setUp()
+        // The machine's real pointer must not haunt the hover checks: wherever it happens to
+        // rest, it is never "inside the card" unless a test says so.
+        PeekPreviewPanel.pointerLocation = { NSPoint(x: -100_000, y: -100_000) }
+    }
 
     override func tearDown() {
-        OutlineTableView.holdDelay = 0.35
+        OutlineTableView.hoverPeekDelay = 0.4
+        OutlineViewController.hoverHideGrace = 0.15
+        PeekPreviewPanel.pointerLocation = { NSEvent.mouseLocation }
         super.tearDown()
     }
 
@@ -199,54 +208,101 @@ final class OutlinePressIntegrationTests: XCTestCase {
         return condition()
     }
 
-    func testHoldShowsCardReleasePinsItAndBackdropClickDismisses() throws {
-        OutlineTableView.holdDelay = 0.02
+    /// The middle of a row, in the table's own coordinates — what `hoverPeekMoved` takes.
+    private func rowPoint(_ row: Int, in table: OutlineTableView) -> NSPoint {
+        NSPoint(x: table.rect(ofRow: row).midX, y: table.rect(ofRow: row).midY)
+    }
+
+    func testHoverShowsTheCardWithALightVeilThatStaysOutOfTheWay() throws {
+        OutlineTableView.hoverPeekDelay = 0.02
         let (controller, table, window) = try outline()
-        let rowPoint = table.convert(
-            NSPoint(x: table.rect(ofRow: 1).midX, y: table.rect(ofRow: 1).midY), to: nil
-        )
-
-        table.mouseDown(with: try mouseEvent(.leftMouseDown, at: rowPoint, in: window))
-        XCTAssertTrue(waitUntil { window.childWindows?.isEmpty == false },
-                      "the hold must present the card")
+        var selected: String?
+        controller.onSelect = { selected = $0 }
         let overlays = window.contentView?.subviews.count ?? 0
-        XCTAssertGreaterThan(overlays, 1, "the backdrop must dim while the card is up")
 
-        table.mouseUp(with: try mouseEvent(.leftMouseUp, at: rowPoint, in: window))
-        spin(0.02)
-        XCTAssertEqual(window.childWindows?.count, 1, "release must keep the card up")
+        table.hoverPeekMoved(to: rowPoint(1, in: table))
+        XCTAssertTrue(waitUntil { window.childWindows?.isEmpty == false },
+                      "resting on the row must present the card")
+        XCTAssertEqual(window.contentView?.subviews.count, overlays + 1,
+                       "a light veil must dim the window behind the card")
+        XCTAssertNil(selected, "a hover must not navigate")
 
-        // The layer under the card is dimmed and inert: pointer feedback in the sidebar must
-        // stay silent while the card is pinned.
-        XCTAssertTrue(table.hoverSuppressed, "hover must be suppressed while the card is up")
-        table.refreshHover()
-        XCTAssertEqual(table.hoveredRow, -1, "no row may answer the pointer under the backdrop")
+        // The veil is feedback, never a control: the pointer must reach the rows through it.
+        let clickPoint = table.convert(rowPoint(1, in: table), to: nil)
+        let hit = window.contentView?.hitTest(clickPoint)
+        XCTAssertEqual(hit?.isDescendant(of: table), true,
+                       "the veil must not intercept the pointer — the rows beneath stay live")
 
-        // The dimming overlay is the topmost content subview; a click landing on it — anywhere
-        // outside the card — closes the peek and goes no further.
-        let outside = try mouseEvent(.leftMouseDown, at: NSPoint(x: 5, y: 5), in: window)
-        window.contentView?.hitTest(NSPoint(x: 5, y: 5))?.mouseDown(with: outside)
+        controller.cancelPreview()
+        XCTAssertTrue(waitUntil { (window.childWindows ?? []).isEmpty })
+        XCTAssertEqual(window.contentView?.subviews.count, overlays,
+                       "the veil must go away with the card")
+    }
+
+    func testPointerLeavingTheRowHidesTheCard() throws {
+        OutlineTableView.hoverPeekDelay = 0.02
+        OutlineViewController.hoverHideGrace = 0.02
+        let (controller, table, window) = try outline()
+
+        table.hoverPeekMoved(to: rowPoint(1, in: table))
+        XCTAssertTrue(waitUntil { window.childWindows?.isEmpty == false },
+                      "resting on the row must present the card")
+
+        table.hoverPeekMoved(to: NSPoint(x: 10, y: table.bounds.maxY + 50))
         XCTAssertTrue(waitUntil { (window.childWindows ?? []).isEmpty },
-                      "a click outside the card must dismiss it")
-        XCTAssertEqual(window.contentView?.subviews.count, overlays - 1,
-                       "the backdrop must go away with the card")
-        XCTAssertFalse(table.hoverSuppressed, "hover must come back once the card is gone")
+                      "the card must go once the pointer has moved on")
         _ = controller // kept alive for the duration of the gesture
     }
 
+    func testPointerOnTheCardKeepsItUp() throws {
+        OutlineTableView.hoverPeekDelay = 0.02
+        OutlineViewController.hoverHideGrace = 0.02
+        let (controller, table, window) = try outline()
+
+        table.hoverPeekMoved(to: rowPoint(1, in: table))
+        XCTAssertTrue(waitUntil { window.childWindows?.isEmpty == false })
+        let card = try XCTUnwrap(window.childWindows?.first)
+        // The pointer travels from the row onto the card.
+        PeekPreviewPanel.pointerLocation = {
+            NSPoint(x: card.frame.midX, y: card.frame.midY)
+        }
+
+        table.hoverPeekMoved(to: NSPoint(x: 10, y: table.bounds.maxY + 50))
+        spin(0.2)
+        XCTAssertTrue(window.childWindows?.isEmpty == false,
+                      "a card the pointer is reading must stay up")
+
+        PeekPreviewPanel.pointerLocation = { NSPoint(x: -100_000, y: -100_000) }
+        controller.cancelPreview()
+        waitUntil { (window.childWindows ?? []).isEmpty }
+    }
+
+    func testScrollingTheSidebarHidesTheCard() throws {
+        OutlineTableView.hoverPeekDelay = 0.02
+        let (controller, table, window) = try outline()
+
+        table.hoverPeekMoved(to: rowPoint(1, in: table))
+        XCTAssertTrue(waitUntil { window.childWindows?.isEmpty == false })
+
+        // A scroll moves the row the card is anchored to; the card must not stay behind.
+        let scroll = try XCTUnwrap(table.enclosingScrollView)
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: 5))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        XCTAssertTrue(waitUntil { (window.childWindows ?? []).isEmpty },
+                      "a sidebar scroll must dismiss the card")
+        _ = controller
+    }
+
     func testLongContentScrollsInsideTheCard() throws {
-        OutlineTableView.holdDelay = 0.02
+        OutlineTableView.hoverPeekDelay = 0.02
         let (controller, table, window) = try outline()
         controller.onPreviewContent = { _ in
             textPreview(Array(repeating: "A line of preview text.", count: 200)
                 .joined(separator: "\n"))
         }
-        let rowPoint = table.convert(
-            NSPoint(x: table.rect(ofRow: 1).midX, y: table.rect(ofRow: 1).midY), to: nil
-        )
-        table.mouseDown(with: try mouseEvent(.leftMouseDown, at: rowPoint, in: window))
+        table.hoverPeekMoved(to: rowPoint(1, in: table))
         XCTAssertTrue(waitUntil { window.childWindows?.isEmpty == false },
-                      "the hold must present the card")
+                      "the hover must present the card")
 
         let card = try XCTUnwrap(window.childWindows?.first?.contentView)
         let scroll = try XCTUnwrap(card.subviews.compactMap { $0 as? NSScrollView }.first,
@@ -269,7 +325,6 @@ final class OutlinePressIntegrationTests: XCTestCase {
             "the bottom of the content must be reachable by scrolling"
         )
 
-        table.mouseUp(with: try mouseEvent(.leftMouseUp, at: rowPoint, in: window))
         controller.cancelPreview()
         waitUntil { (window.childWindows ?? []).isEmpty }
     }
@@ -278,7 +333,7 @@ final class OutlinePressIntegrationTests: XCTestCase {
     /// draw that table with the reading pane's own `TableBlockView` inside a
     /// `DocumentStackView` — not a text substitute.
     func testCardRendersBlocksWithTheReadingEngine() throws {
-        OutlineTableView.holdDelay = 0.02
+        OutlineTableView.hoverPeekDelay = 0.02
         let (controller, table, window) = try outline()
         let built = build(try makeDocument(fixtureSource))
         controller.onPreviewContent = { index in
@@ -288,12 +343,9 @@ final class OutlinePressIntegrationTests: XCTestCase {
         }
 
         // Row 0 is Beta: a paragraph and a table.
-        let rowPoint = table.convert(
-            NSPoint(x: table.rect(ofRow: 0).midX, y: table.rect(ofRow: 0).midY), to: nil
-        )
-        table.mouseDown(with: try mouseEvent(.leftMouseDown, at: rowPoint, in: window))
+        table.hoverPeekMoved(to: rowPoint(0, in: table))
         XCTAssertTrue(waitUntil { window.childWindows?.isEmpty == false },
-                      "the hold must present the card")
+                      "the hover must present the card")
 
         let card = try XCTUnwrap(window.childWindows?.first?.contentView)
         let scroll = try XCTUnwrap(card.subviews.compactMap { $0 as? NSScrollView }.first)
@@ -308,25 +360,40 @@ final class OutlinePressIntegrationTests: XCTestCase {
         XCTAssertTrue(contains(TextComponentView.self, in: stack),
                       "prose must be drawn by the component view the page uses")
 
-        table.mouseUp(with: try mouseEvent(.leftMouseUp, at: rowPoint, in: window))
         controller.cancelPreview()
         waitUntil { (window.childWindows ?? []).isEmpty }
     }
 
-    func testQuickClickNavigatesWithoutShowingACard() throws {
-        OutlineTableView.holdDelay = 60
+    func testClickNavigatesWithoutShowingACard() throws {
+        OutlineTableView.hoverPeekDelay = 60
         let (controller, table, window) = try outline()
         var selected: String?
         controller.onSelect = { selected = $0 }
-        let rowPoint = table.convert(
-            NSPoint(x: table.rect(ofRow: 1).midX, y: table.rect(ofRow: 1).midY), to: nil
-        )
+        let clickPoint = table.convert(rowPoint(1, in: table), to: nil)
 
-        table.mouseDown(with: try mouseEvent(.leftMouseDown, at: rowPoint, in: window))
-        table.mouseUp(with: try mouseEvent(.leftMouseUp, at: rowPoint, in: window))
-        XCTAssertNotNil(selected, "a quick click must still navigate")
+        table.mouseDown(with: try mouseEvent(.leftMouseDown, at: clickPoint, in: window))
+        table.mouseUp(with: try mouseEvent(.leftMouseUp, at: clickPoint, in: window))
+        XCTAssertNotNil(selected, "a click must still navigate")
         XCTAssertEqual(window.childWindows?.count ?? 0, 0,
-                       "a quick click must not present a card")
+                       "a click must not present a card")
+        _ = controller
+    }
+
+    func testClickWhileCardIsUpNavigatesAndDismisses() throws {
+        OutlineTableView.hoverPeekDelay = 0.02
+        let (controller, table, window) = try outline()
+        var selected: String?
+        controller.onSelect = { selected = $0 }
+
+        table.hoverPeekMoved(to: rowPoint(1, in: table))
+        XCTAssertTrue(waitUntil { window.childWindows?.isEmpty == false })
+
+        let clickPoint = table.convert(rowPoint(1, in: table), to: nil)
+        table.mouseDown(with: try mouseEvent(.leftMouseDown, at: clickPoint, in: window))
+        table.mouseUp(with: try mouseEvent(.leftMouseUp, at: clickPoint, in: window))
+        XCTAssertNotNil(selected, "the click must still navigate")
+        XCTAssertTrue(waitUntil { (window.childWindows ?? []).isEmpty },
+                      "and the glance must not outlive the decision to go")
     }
 }
 
@@ -457,7 +524,7 @@ final class LinkPeekIntegrationTests: XCTestCase {
 
     // MARK: Hover
 
-    func testHoverOnLinkShowsTheCardWithoutBackdropOrNavigation() throws {
+    func testHoverOnLinkShowsTheCardWithALightVeilAndNoNavigation() throws {
         TextComponentView.linkHoverDelay = 0.02
         let (view, window) = try pane()
         let (text, rect) = try linkView(in: view)
@@ -470,9 +537,8 @@ final class LinkPeekIntegrationTests: XCTestCase {
         text.hoverMoved(to: NSPoint(x: rect.midX, y: rect.midY))
         spin(0.08)
         XCTAssertEqual(window.childWindows?.count, 1, "resting on the link must show the card")
-        XCTAssertFalse(view.linkPeek.presentsBackdrop, "a hover glance must not pin")
-        XCTAssertEqual(window.contentView?.subviews.count, overlays,
-                       "a hover must not dim the pane — nothing beneath it changes")
+        XCTAssertEqual(window.contentView?.subviews.count, overlays + 1,
+                       "a light veil must dim the window behind the card")
         XCTAssertEqual(view.scrollView.contentView.bounds.origin, origin,
                        "a hover must never move the reading position")
         XCTAssertTrue(reported.isEmpty, "a hover must not report a navigation")
@@ -490,6 +556,8 @@ final class LinkPeekIntegrationTests: XCTestCase {
 
         view.linkPeek.hide()
         spin(0.3)
+        XCTAssertEqual(window.contentView?.subviews.count, overlays,
+                       "the veil must go away with the card")
     }
 
     func testPointerLeavingTheLinkHidesTheHoverCard() throws {
@@ -703,68 +771,5 @@ final class LinkHitTests: XCTestCase {
                        "#gamma")
         XCTAssertNil(view.link(at: NSPoint(x: rect.maxX + 40, y: rect.midY)),
                      "blank space past the line must not read as the link")
-    }
-}
-
-final class OutlinePressPreviewStateTests: XCTestCase {
-
-    func testQuickPressAndReleaseIsAClick() {
-        let press = PressPeekState()
-        press.pressBegan(row: 3)
-        XCTAssertEqual(press.released(pointerRow: 3), .click(3))
-    }
-
-    func testReleaseOnAnotherRowWithoutPreviewIsNothing() {
-        let press = PressPeekState()
-        press.pressBegan(row: 3)
-        XCTAssertEqual(press.released(pointerRow: 5), .none)
-    }
-
-    func testHoldShowsAndReleasePinsWithoutClicking() {
-        let press = PressPeekState()
-        press.pressBegan(row: 3)
-        XCTAssertEqual(press.holdFired(pointerRow: 3), .show(3))
-        XCTAssertEqual(press.released(pointerRow: 3), .pin,
-                       "a peek's release keeps the card up and must never navigate")
-    }
-
-    func testForceClickShowsImmediatelyAndOnlyOnce() {
-        let press = PressPeekState()
-        press.pressBegan(row: 2)
-        XCTAssertEqual(press.forceClicked(pointerRow: 2), .show(2))
-        XCTAssertEqual(press.holdFired(pointerRow: 2), .none,
-                       "a late hold timer must not re-show over a force click")
-    }
-
-    func testScrubUpdatesAndPointerOffRowsHides() {
-        let press = PressPeekState()
-        press.pressBegan(row: 1)
-        XCTAssertEqual(press.holdFired(pointerRow: 1), .show(1))
-        XCTAssertEqual(press.pointerMoved(toRow: 2), .update(2))
-        XCTAssertEqual(press.pointerMoved(toRow: 2), .none, "same row is not a change")
-        XCTAssertEqual(press.pointerMoved(toRow: -1), .update(-1), "off the rows hides the card")
-        XCTAssertEqual(press.pointerMoved(toRow: 1), .update(1), "and back restores it")
-    }
-
-    func testMovesBeforeTheThresholdDoNothing() {
-        let press = PressPeekState()
-        press.pressBegan(row: 1)
-        XCTAssertEqual(press.pointerMoved(toRow: 2), .none)
-    }
-
-    func testCancelEndsThePressSilently() {
-        let press = PressPeekState()
-        press.pressBegan(row: 1)
-        _ = press.holdFired(pointerRow: 1)
-        press.cancel()
-        XCTAssertEqual(press.released(pointerRow: 1), .none)
-    }
-
-    func testHoldAfterCancelDoesNotShow() {
-        let press = PressPeekState()
-        press.pressBegan(row: 1)
-        press.cancel()
-        XCTAssertEqual(press.holdFired(pointerRow: 1), .none,
-                       "a timer that outlives its press must not present a card")
     }
 }

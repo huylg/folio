@@ -667,7 +667,7 @@ public final class NativeDocumentView: NSView {
     @objc private func viewportChanged() {
         // A scroll moves the link a hover card is anchored to; the card must not stay behind
         // pointing at nothing.
-        if linkPeek.isShown, !linkPeek.presentsBackdrop { dismissLinkPeek() }
+        if linkPeek.isShown { dismissLinkPeek() }
         // The scrollers do not follow an animated `boundsOrigin` on their own.
         if isNavigating { scrollView.reflectScrolledClipView(scrollView.contentView) }
         stackView.populateVisible()
@@ -891,18 +891,17 @@ extension NativeDocumentView: ComponentLinkPeekDelegate {
         guard let window, let target = linkPeekTarget(for: destination) else { return }
         hoverHideWork?.cancel()
         peekingComponent = view as? TextComponentView
-        show(target, anchoredTo: rect, of: view, in: window, backdrop: false)
+        show(target, anchoredTo: rect, of: view, in: window)
     }
 
     private func show(_ target: LinkPeekTarget, anchoredTo rect: NSRect, of view: NSView,
-                      in window: NSWindow, backdrop: Bool) {
+                      in window: NSWindow) {
         let screenRect = window.convertToScreen(view.convert(rect, to: nil))
         switch target {
         case .section(let preview, let title):
-            linkPeek.show(preview, title: title, anchoredTo: screenRect, in: window,
-                          backdrop: backdrop)
+            linkPeek.show(preview, title: title, anchoredTo: screenRect, in: window)
         case .web(let url):
-            linkPeek.showWeb(url, anchoredTo: screenRect, in: window, backdrop: backdrop)
+            linkPeek.showWeb(url, anchoredTo: screenRect, in: window)
         }
     }
 
@@ -914,11 +913,10 @@ extension NativeDocumentView: ComponentLinkPeekDelegate {
     /// the card. Deferred by a grace period rather than immediate, because the honest reading
     /// of "left the link" often is "on its way to the card".
     private func scheduleHoverHide() {
-        guard linkPeek.isShown, !linkPeek.presentsBackdrop else { return }
+        guard linkPeek.isShown else { return }
         hoverHideWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            guard let self, linkPeek.isShown, !linkPeek.presentsBackdrop,
-                  !linkPeek.isPointerInsideCard else { return }
+            guard let self, linkPeek.isShown, !linkPeek.isPointerInsideCard else { return }
             dismissLinkPeek()
         }
         hoverHideWork = work
