@@ -13,13 +13,15 @@ struct InlineVisitor: MarkupVisitor {
     let metrics: DocumentMetrics
     let baseRole: InlineRole
     let baseURL: URL
+    let rootURL: URL
 
     private var traits = Traits()
 
-    init(metrics: DocumentMetrics, baseRole: InlineRole = .body, baseURL: URL) {
+    init(metrics: DocumentMetrics, baseRole: InlineRole = .body, baseURL: URL, rootURL: URL) {
         self.metrics = metrics
         self.baseRole = baseRole
         self.baseURL = baseURL
+        self.rootURL = rootURL
     }
 
     struct Traits {
@@ -170,7 +172,7 @@ struct InlineVisitor: MarkupVisitor {
         let source = image.source ?? ""
         let alt = image.plainText
         let attachment = NSTextAttachment()
-        let resolved = LinkRouter.resolve(source, relativeTo: baseURL)
+        let resolved = LinkRouter.resolve(source, relativeTo: baseURL, root: rootURL)
         if case .file(let url) = resolved, let loaded = NSImage(contentsOf: url) {
             let cap = metrics.ramp.body().pointSize * 1.5
             let scale = min(1, cap / max(loaded.size.height, 1))

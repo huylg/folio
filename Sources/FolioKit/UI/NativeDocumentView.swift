@@ -849,7 +849,7 @@ extension NativeDocumentView: ComponentLinkDelegate {
     fileprivate func route(_ destination: String) {
         guard let document else { return }
         let base = document.url.deletingLastPathComponent()
-        switch LinkRouter.resolve(destination, relativeTo: base) {
+        switch LinkRouter.resolve(destination, relativeTo: base, root: document.rootURL) {
         case .external(let url), .file(let url):
             NSWorkspace.shared.open(url)
         case .fragment(let anchor):
@@ -933,7 +933,7 @@ extension NativeDocumentView: ComponentLinkPeekDelegate {
     private func linkPeekTarget(for destination: String) -> LinkPeekTarget? {
         guard let built, let document else { return nil }
         let base = document.url.deletingLastPathComponent()
-        switch LinkRouter.resolve(destination, relativeTo: base) {
+        switch LinkRouter.resolve(destination, relativeTo: base, root: document.rootURL) {
         case .external(let url):
             guard let scheme = url.scheme?.lowercased(),
                   scheme == "http" || scheme == "https" else { return nil }
@@ -1022,6 +1022,22 @@ extension NativeDocumentView: BlockHost {
     public func blockRequestsCopy(_ text: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    public func blockRequestsRun(_ command: String,
+                                 onOutput: @escaping (String) -> Void,
+                                 completion: @escaping (ProcessRunner.Output?) -> Void) {
+        guard let document else { completion(nil); return }
+        pendingWorkCount += 1
+        ProcessRunner.streamShell(command, at: document.rootURL,
+                                  onOutput: onOutput) { [weak self] result in
+            self?.pendingWorkCount -= 1
+            completion(result)
+        }
+    }
+
+    public func blockHeightDidChange(_ view: NSView) {
+        stackView.remeasureComponent(containing: view)
     }
 }
 

@@ -79,6 +79,7 @@ public final class ImageBlockView: BlockCardView {
     private let source: String
     private let alt: String
     private let base: URL
+    private let root: URL
     private let metrics: DocumentMetrics
     private weak var host: BlockHost?
 
@@ -86,11 +87,12 @@ public final class ImageBlockView: BlockCardView {
     private var placeholder: NSView?
     private var isLightImage = false
 
-    public init(source: String, alt: String, base: URL,
+    public init(source: String, alt: String, base: URL, root: URL,
                 metrics: DocumentMetrics, host: BlockHost?) {
         self.source = source
         self.alt = alt
         self.base = base
+        self.root = root
         self.metrics = metrics
         self.host = host
         super.init(frame: .zero)
@@ -117,7 +119,7 @@ public final class ImageBlockView: BlockCardView {
     required public init?(coder: NSCoder) { fatalError("not supported") }
 
     private func configure() {
-        switch Self.classify(source, base: base) {
+        switch Self.classify(source, base: base, root: root) {
         case .local(let url):
             if let cached = ImageLoader.shared.cached(url) {
                 apply(cached)
@@ -195,7 +197,7 @@ public final class ImageBlockView: BlockCardView {
     }
 
     @objc private func loadRemote() {
-        guard case .remote(let url) = Self.classify(source, base: base) else { return }
+        guard case .remote(let url) = Self.classify(source, base: base, root: root) else { return }
         ImageLoader.shared.load(url) { [weak self] image in
             guard let self else { return }
             if let image { self.apply(image) } else { self.showFailure() }
@@ -252,12 +254,12 @@ public final class ImageBlockView: BlockCardView {
         case unresolved
     }
 
-    static func classify(_ source: String, base: URL) -> Classification {
+    static func classify(_ source: String, base: URL, root: URL?) -> Classification {
         if let url = URL(string: source), let scheme = url.scheme?.lowercased(),
            scheme == "http" || scheme == "https" {
             return .remote(url)
         }
-        switch LinkRouter.resolve(source, relativeTo: base) {
+        switch LinkRouter.resolve(source, relativeTo: base, root: root) {
         case .file(let url), .markdown(let url, _): return .local(url)
         default: return .unresolved
         }
@@ -265,9 +267,9 @@ public final class ImageBlockView: BlockCardView {
 
     /// Analytic: the native aspect ratio comes from a header-only read, so the height is right
     /// before any pixels are decoded.
-    public static func height(source: String, alt: String, base: URL,
+    public static func height(source: String, alt: String, base: URL, root: URL,
                               width: CGFloat, metrics: DocumentMetrics) -> CGFloat {
-        switch classify(source, base: base) {
+        switch classify(source, base: base, root: root) {
         case .local(let url):
             guard let size = ImageLoader.shared.pixelSize(of: url), size.width > 0 else {
                 return placeholderHeight(metrics: metrics)
@@ -292,7 +294,7 @@ public final class ImageBlockView: BlockCardView {
 
     public override func sizeThatFits(width: CGFloat) -> CGSize {
         CGSize(width: width,
-               height: Self.height(source: source, alt: alt, base: base,
+               height: Self.height(source: source, alt: alt, base: base, root: root,
                                    width: width, metrics: metrics))
     }
 }

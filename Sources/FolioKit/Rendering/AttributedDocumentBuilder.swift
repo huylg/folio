@@ -31,6 +31,7 @@ public struct AttributedDocumentBuilder {
             proseInset: proseInset,
             outline: document.outline,
             baseURL: document.url.deletingLastPathComponent(),
+            rootURL: document.rootURL,
             settings: settings
         )
 
@@ -89,6 +90,7 @@ struct BlockWalker: MarkupWalker {
     let proseInset: CGFloat
     let outline: [OutlineEntry]
     let baseURL: URL
+    let rootURL: URL
     let settings: AppSettings
 
     var out = NSMutableAttributedString()
@@ -105,11 +107,12 @@ struct BlockWalker: MarkupWalker {
     private var quoteDepth = 0
 
     init(metrics: DocumentMetrics, proseInset: CGFloat, outline: [OutlineEntry],
-         baseURL: URL, settings: AppSettings) {
+         baseURL: URL, rootURL: URL, settings: AppSettings) {
         self.metrics = metrics
         self.proseInset = proseInset
         self.outline = outline
         self.baseURL = baseURL
+        self.rootURL = rootURL
         self.settings = settings
     }
 
@@ -149,7 +152,7 @@ struct BlockWalker: MarkupWalker {
     }
 
     private func inline(_ markup: Markup, base: InlineRole = .body) -> NSAttributedString {
-        var visitor = InlineVisitor(metrics: metrics, baseRole: base, baseURL: baseURL)
+        var visitor = InlineVisitor(metrics: metrics, baseRole: base, baseURL: baseURL, rootURL: rootURL)
         return visitor.visit(markup)
     }
 
@@ -235,7 +238,8 @@ struct BlockWalker: MarkupWalker {
         // is selectable and findable, which the old `<figcaption>` was not.
         if paragraph.childCount == 1, let image = paragraph.child(at: 0) as? Markdown.Image {
             appendBlockWidget(
-                BlockPayload.image(source: image.source ?? "", alt: image.plainText, base: baseURL),
+                BlockPayload.image(source: image.source ?? "", alt: image.plainText,
+                                   base: baseURL, root: rootURL),
                 kind: .image
             )
             let alt = image.plainText
@@ -415,15 +419,19 @@ struct BlockWalker: MarkupWalker {
     /// be selected out of a block, and VoiceOver reads it line by line. The card's fill,
     /// border, and header bar are drawn behind the text by `CodeCardLayoutFragment`.
     private mutating func appendCodeCard(_ code: String, label: String, language: String?) {
-        // The header is its own paragraph, carrying the label and the source: that is where
-        // `ComponentSplitter` reads them to build the card.
+        // The header is its own paragraph, carrying the label, the source, and the declared
+        // language: that is where `ComponentSplitter` reads them to build the card.
+        var headerAttributes: [NSAttributedString.Key: Any] = [
+            .folioCodeSource: code, .folioCodeLabel: label,
+        ]
+        if let language { headerAttributes[.folioCodeLanguage] = language }
         appendParagraph(
             NSAttributedString(string: label, attributes: [
                 .font: TypeRamp.fixedPitchMono(ofSize: metrics.ramp.caption().pointSize),
                 .foregroundColor: Ink.tertiary,
             ]),
             kind: .codeHeader,
-            extraAttributes: [.folioCodeSource: code, .folioCodeLabel: label]
+            extraAttributes: headerAttributes
         )
 
         let lines = code.components(separatedBy: "\n")
@@ -581,4 +589,7 @@ extension NSAttributedString.Key {
     /// Full source of a code card, stamped on its first line so the copy button owns its own
     /// text rather than indexing into a shared array.
     public static let folioCodeSource = NSAttributedString.Key("folioCodeSource")
+    /// The fence's declared language, stamped on a code card's header when the author wrote
+    /// one. A shell language is what makes a card runnable.
+    public static let folioCodeLanguage = NSAttributedString.Key("folioCodeLanguage")
 }

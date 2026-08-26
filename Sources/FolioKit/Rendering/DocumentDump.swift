@@ -80,7 +80,7 @@ public enum DocumentDump {
             let paragraphs = attributed.string
                 .components(separatedBy: "\n").filter { !$0.isEmpty }.count
             return "text(\(paragraphs) para, len \(attributed.length))"
-        case .code(let label, let source, _):
+        case .code(let label, let source, _, _):
             let lines = source.components(separatedBy: "\n").count
             return "code(\(label), \(lines) lines)"
         case .widget(let payload):
@@ -129,7 +129,7 @@ public enum DocumentDump {
             return "diagram \(graph.dumpDescription)"
         case .frontmatter(let fm):
             return "frontmatter \(fm.orderedKeys.count) keys"
-        case .image(let source, let alt, _):
+        case .image(let source, let alt, _, _):
             return "image  \(source) alt=\(alt.isEmpty ? "(none)" : alt)"
         case .htmlBlock(let html):
             return "html   \(html.count) chars"

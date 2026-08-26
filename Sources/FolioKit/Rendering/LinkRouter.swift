@@ -28,7 +28,10 @@ public func isMarkdownFile(_ url: URL) -> Bool {
 
 public enum LinkRouter {
 
-    public static func resolve(_ destination: String, relativeTo base: URL) -> LinkTarget {
+    /// `base` is the document's own folder; `root` is its project root (see `ProjectRoot`).
+    /// A destination starting with `/` resolves against `root` rather than the filesystem —
+    /// inside a repository, "/docs/setup.md" means the repo's docs, never the machine's.
+    public static func resolve(_ destination: String, relativeTo base: URL, root: URL? = nil) -> LinkTarget {
         let trimmed = destination.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return .missing(destination) }
 
@@ -52,7 +55,17 @@ public enum LinkRouter {
             return fragment.map { LinkTarget.fragment($0) } ?? .missing(destination)
         }
 
-        let url = URL(fileURLWithPath: path, relativeTo: base).standardizedFileURL
+        let url: URL
+        if path.hasPrefix("/"), let root {
+            var trimmed = path
+            // "//x" must not fall back to filesystem-absolute and escape the root.
+            while trimmed.hasPrefix("/") { trimmed.removeFirst() }
+            url = trimmed.isEmpty
+                ? root.standardizedFileURL
+                : URL(fileURLWithPath: trimmed, relativeTo: root).standardizedFileURL
+        } else {
+            url = URL(fileURLWithPath: path, relativeTo: base).standardizedFileURL
+        }
         guard FileManager.default.fileExists(atPath: url.path) else {
             return .missing(destination)
         }

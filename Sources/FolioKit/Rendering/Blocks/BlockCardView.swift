@@ -54,10 +54,15 @@ public class BlockCardView: NSView, DimmableComponent {
     open var cardFillColor: NSColor { Ink.cardFill }
     open var cardBorderColor: NSColor { Ink.hairline }
 
+    /// Where the card's chrome is drawn — the whole view by default. A subclass whose view
+    /// holds more than the card itself (a code card with run consoles below it) narrows this
+    /// so the rounded rect ends where the card does.
+    open var cardRect: NSRect { bounds }
+
     public override func draw(_ dirtyRect: NSRect) {
         let hairline = CardChrome.hairlineWidth(in: self)
         let path = NSBezierPath(
-            roundedRect: bounds.insetBy(dx: hairline / 2, dy: hairline / 2),
+            roundedRect: cardRect.insetBy(dx: hairline / 2, dy: hairline / 2),
             xRadius: CardChrome.cornerRadius,
             yRadius: CardChrome.cornerRadius
         )
@@ -66,7 +71,7 @@ public class BlockCardView: NSView, DimmableComponent {
 
         NSGraphicsContext.saveGraphicsState()
         path.addClip()
-        drawCardContents(in: bounds)
+        drawCardContents(in: cardRect)
         NSGraphicsContext.restoreGraphicsState()
 
         cardBorderColor.setStroke()
