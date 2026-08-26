@@ -31,6 +31,20 @@ public enum SectionPreviewBuilder {
     public static var componentLimit = 24
     public static var characterLimit = 6000
 
+    /// The components a whole-document peek opens with: the front of the document, under the
+    /// same caps as a section. The document's own heading stays in — unlike a section's, it is
+    /// part of showing what the file is.
+    public static func leadingComponents(in built: BuiltDocument) -> [DocumentComponent] {
+        var result: [DocumentComponent] = []
+        var characters = 0
+        for component in built.components {
+            guard result.count < componentLimit, characters < characterLimit else { break }
+            result.append(component)
+            characters += component.range.length
+        }
+        return result
+    }
+
     /// The components under section `index`. Empty when the section has no body — the row
     /// already shows the title, so a card with nothing under it is not worth presenting.
     public static func components(

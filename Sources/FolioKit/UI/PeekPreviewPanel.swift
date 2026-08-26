@@ -1,13 +1,17 @@
 import AppKit
+import WebKit
 
-/// The press-to-peek gesture's state, separated from the table so the transitions can be
-/// tested without synthesizing mouse events.
+/// The press-to-peek gesture's state, separated from the view that receives the events so the
+/// transitions can be tested without synthesizing them.
 ///
 /// A quick click navigates; a press that crosses the hold threshold (or force-clicks) becomes
-/// a preview, and its release is swallowed — peeking at a section must not also go there.
+/// a preview, and its release is swallowed — peeking at something must not also go there.
 /// The release leaves the card up: from there it belongs to the dimmed backdrop, and the next
 /// click anywhere outside it closes it.
-final class OutlinePressPreviewState {
+///
+/// A "row" is whatever the owner presses on: the outline uses table rows, the reading pane a
+/// single link (0 while the pointer is on it). -1 always means "off the targets".
+final class PressPeekState {
 
     enum Effect: Equatable {
         case none
@@ -65,8 +69,9 @@ final class OutlinePressPreviewState {
     }
 }
 
-/// The Safari-link-preview-style peek card: an arrowless rounded panel beside the sidebar
-/// showing a section's content while its outline row is pressed.
+/// The Safari-link-preview-style peek card: an arrowless rounded panel beside whatever was
+/// pressed — an outline row, a link in the page — showing a section's content while the press
+/// holds and after it pins.
 ///
 /// A borderless child window rather than an `NSPopover`, which always draws an anchor arrow
 /// and its own bubble chrome. The panel never activates and never becomes key.
@@ -80,8 +85,11 @@ final class OutlinePressPreviewState {
 /// releasing the press pins the card, and the next click (or scroll) anywhere outside it —
 /// which lands on the overlay — closes it. A click on the card itself lands on the panel and
 /// does nothing. The press that summoned the card is unaffected by the overlay appearing
-/// beneath the pointer: AppKit keeps delivering a captured press's events to the table.
-final class OutlinePreviewController {
+/// beneath the pointer: AppKit keeps delivering a captured press's events to the pressed view.
+///
+/// Owns nothing about the gesture: callers anchor it to a screen rect — a row's, a link's —
+/// and route `PressPeekState`'s effects into `show`/`hide` themselves.
+final class PeekPreviewPanel {
 
     /// Fixed, rather than shrunk to the content as it was while the card held a flat string
     /// of prose: components lay out to the column they are given, and a table or diagram
@@ -94,8 +102,11 @@ final class OutlinePreviewController {
     static let headerHeight: CGFloat = 34
     /// Continuous and window-sized, matching the app's own chrome rather than a tooltip's.
     static let cornerRadius: CGFloat = 16
-    /// The gap between the sidebar's edge and the card.
+    /// The gap between the anchor's edge and the card.
     static let anchorGap: CGFloat = 10
+    /// What scrolling content gives up on the trailing edge for the overlay scroller, which
+    /// otherwise draws over the last points of every line.
+    static let scrollerGutter: CGFloat = 16
     /// Entrance scale, the Safari zoom-in feel.
     static let appearScale: CGFloat = 0.96
     static var appearDuration: TimeInterval = 0.15
@@ -104,6 +115,25 @@ final class OutlinePreviewController {
     /// Asked for when the reader clicks or scrolls outside the pinned card, or the window
     /// resizes or resigns key under it. The owner ends the whole gesture, not just the card.
     var onDismissRequest: (() -> Void)?
+
+    /// Fired when the pointer enters or leaves the card. Owners of a hover (backdrop-less)
+    /// presentation use it to keep the card up while it is being read — and scrolled — and to
+    /// let it go once the pointer moves on.
+    var onCardHoverChange: ((Bool) -> Void)?
+
+    /// Whether the current presentation dims and blocks the layer beneath. Meaningless while
+    /// `isShown` is false.
+    private(set) var presentsBackdrop = true
+
+    /// Where the pointer is, for the hover checks. Injected so a test's card is not haunted by
+    /// wherever the machine's real mouse happens to rest.
+    static var pointerLocation: () -> NSPoint = { NSEvent.mouseLocation }
+
+    /// Whether the pointer is currently over the card.
+    var isPointerInsideCard: Bool {
+        guard isShown, let panel else { return false }
+        return panel.frame.contains(Self.pointerLocation())
+    }
 
     private var panel: NSPanel?
     private let card = PreviewCardView()
@@ -116,6 +146,9 @@ final class OutlinePreviewController {
     private var windowObservers: [NSObjectProtocol] = []
     private var keyMonitor: Any?
     private var scrollObserver: NSObjectProtocol?
+    /// The web preview's surface, created the first time an external link peeks.
+    private var webView: WKWebView?
+    private var webTitleObservation: NSKeyValueObservation?
     /// Whether the current content is taller than the card and scrolls inside it.
     private var contentOverflows = false
     private(set) var isShown = false
@@ -125,20 +158,34 @@ final class OutlinePreviewController {
         unwatch()
     }
 
-    /// Presents (or, if already up, moves and refills) the card for a row.
+    /// Presents (or, if already up, moves and refills) the card beside `anchor`, a rect in
+    /// screen coordinates — an outline row's, a link's.
+    ///
+    /// With `backdrop` the card is a pinned peek: the layer beneath dims and goes inert, and
+    /// the backdrop owns dismissal. Without it the card is a hover glance — nothing beneath
+    /// changes, and the owner hides it when the pointer moves on. A hover that turns into a
+    /// press upgrades in place: showing again with `backdrop: true` adds the dimming without
+    /// re-running the entrance.
     func show(
         _ section: SectionPreview, title: String,
-        anchoredToRow row: Int, in tableView: NSTableView
+        anchoredTo anchor: NSRect, in window: NSWindow,
+        backdrop: Bool = true
     ) {
-        guard let window = tableView.window else { return }
-
         let panel = self.panel ?? makePanel()
         self.panel = panel
 
-        let fullHeight = fill(with: section)
+        let fullWidth = Self.cardWidth - Self.padding * 2
+        var fullHeight = fill(with: section, width: fullWidth)
         guard fullHeight > 0 else {
             hide()
             return
+        }
+        if fullHeight > Self.maxContentHeight {
+            // The content scrolls, so the overlay scroller exists — and it draws *over* the
+            // clip's trailing edge. The column steps back from under it and is re-measured at
+            // the narrower width, so the scroller rides an empty margin rather than the text.
+            // A card that fits has no scroller and keeps the full width.
+            fullHeight = fill(with: section, width: fullWidth - Self.scrollerGutter)
         }
         let visibleHeight = min(fullHeight, Self.maxContentHeight)
         contentOverflows = fullHeight > visibleHeight
@@ -148,10 +195,12 @@ final class OutlinePreviewController {
         )
 
         titleField.stringValue = title
-
-        let rowRect = tableView.convert(tableView.rect(ofRow: row), to: nil)
-        let rowScreen = window.convertToScreen(rowRect)
-        let frame = clampedFrame(for: cardSize, besideRow: rowScreen, on: window.screen)
+        // The card may have been a web preview a moment ago: the reading engine takes over.
+        if let webView {
+            webView.stopLoading()
+            webView.isHidden = true
+        }
+        scrollView.isHidden = false
 
         layoutContent(cardSize: cardSize, fullContentHeight: fullHeight)
         // A new section starts at its top, and the fade only claims "more below" while there is.
@@ -160,15 +209,64 @@ final class OutlinePreviewController {
         stackView.populateVisible()
         updateBottomFade()
 
+        present(cardSize: cardSize, anchoredTo: anchor, in: window, backdrop: backdrop)
+    }
+
+    /// Presents (or moves) the card as a live web preview of `url` — for links that leave the
+    /// vault entirely. The header starts as the host and takes the page's title once it loads,
+    /// the way the section card's header names its section.
+    func showWeb(
+        _ url: URL, anchoredTo anchor: NSRect, in window: NSWindow,
+        backdrop: Bool = true
+    ) {
+        let panel = self.panel ?? makePanel()
+        self.panel = panel
+
+        let webView = ensureWebView()
+        scrollView.isHidden = true
+        webView.isHidden = false
+        contentOverflows = false
+        card.showsBottomFade = false
+        titleField.stringValue = url.host ?? url.absoluteString
+
+        // A page has no natural height the way a section does; the card is simply as large as
+        // it is allowed to be, and the page scrolls inside it.
+        let cardSize = NSSize(
+            width: Self.cardWidth,
+            height: Self.headerHeight + Self.maxContentHeight
+        )
+        layoutChrome(cardSize: cardSize)
+        // Full bleed under the header: a web page supplies its own margins.
+        webView.frame = NSRect(x: 0, y: 0, width: cardSize.width,
+                               height: cardSize.height - Self.headerHeight)
+        if webView.url != url { webView.load(URLRequest(url: url)) }
+
+        present(cardSize: cardSize, anchoredTo: anchor, in: window, backdrop: backdrop)
+    }
+
+    /// The shared tail of both `show`s: places the sized card beside the anchor and runs the
+    /// entrance — or, if the card is already up, moves it there (upgrading a hover to a pinned
+    /// presentation in place when `backdrop` arrives on a card that had none).
+    private func present(
+        cardSize: NSSize, anchoredTo anchor: NSRect, in window: NSWindow, backdrop: Bool
+    ) {
+        guard let panel else { return }
+        let frame = clampedFrame(for: cardSize, besideAnchor: anchor, on: window.screen)
+
         if isShown {
-            // Scrubbing: same card, new row. Moved without the entrance animation — the card
-            // tracking rows should read like one object following the pointer.
+            if backdrop, !presentsBackdrop {
+                presentsBackdrop = true
+                presentDimming(in: window)
+            }
+            // Scrubbing: same card, new anchor. Moved without the entrance animation — the card
+            // tracking the pointer should read like one object following it.
             panel.setFrame(frame, display: true)
             return
         }
 
         isShown = true
-        presentDimming(in: window)
+        presentsBackdrop = backdrop
+        if backdrop { presentDimming(in: window) }
         watch(window)
         window.addChildWindow(panel, ordered: .above)
         if Ink.reduceMotion {
@@ -198,19 +296,18 @@ final class OutlinePreviewController {
     /// Loads the section into the stack and measures it, returning the full content height.
     ///
     /// The size cache is cleared first because it is keyed by component index, and the card's
-    /// components are a fresh slice numbered from zero on every row: scrubbing from a section
+    /// components are a fresh slice numbered from zero on every fill: scrubbing from a section
     /// that opens with a paragraph to one that opens with a table would otherwise lay the
     /// table out at the paragraph's cached height.
-    private func fill(with section: SectionPreview) -> CGFloat {
+    private func fill(with section: SectionPreview, width: CGFloat) -> CGFloat {
         host.metrics = section.metrics
         host.sizeCache.removeAll()
-        let contentWidth = Self.cardWidth - Self.padding * 2
         stackView.columnCount = 1
-        stackView.columnWidth = contentWidth
+        stackView.columnWidth = width
         // No pagination in a card: one column, running on for as long as the section is.
         stackView.spreadHeight = 0
         stackView.setComponents(section.components, metrics: section.metrics)
-        stackView.setFrameSize(NSSize(width: contentWidth, height: stackView.frame.height))
+        stackView.setFrameSize(NSSize(width: width, height: stackView.frame.height))
         // Measured explicitly rather than through `layoutSubtreeIfNeeded`: the card's size is
         // derived from this number before the panel has ever been shown, and AppKit's layout
         // pass is not guaranteed to have visited a view that is not yet on screen.
@@ -222,6 +319,8 @@ final class OutlinePreviewController {
         guard isShown, let panel else { return }
         isShown = false
         unwatch()
+        // A page that keeps loading — or playing — behind an ordered-out panel is pure waste.
+        webView?.stopLoading()
         let close = { [dimming] in
             panel.parent?.removeChildWindow(panel)
             panel.orderOut(nil)
@@ -271,7 +370,7 @@ final class OutlinePreviewController {
     }
 
     /// A pinned card cannot outlive the geometry it is anchored to or a window that is no
-    /// longer in front: a resize reflows the rows, and losing key means the reader left.
+    /// longer in front: a resize reflows the content, and losing key means the reader left.
     /// Escape closes it the way it closes any transient panel.
     private func watch(_ window: NSWindow) {
         unwatch()
@@ -351,6 +450,8 @@ final class OutlinePreviewController {
         titleField.lineBreakMode = .byTruncatingTail
         separator.boxType = .separator
 
+        card.onHoverChange = { [weak self] inside in self?.onCardHoverChange?(inside) }
+
         card.translatesAutoresizingMaskIntoConstraints = true
         titleField.translatesAutoresizingMaskIntoConstraints = true
         separator.translatesAutoresizingMaskIntoConstraints = true
@@ -362,7 +463,26 @@ final class OutlinePreviewController {
         return panel
     }
 
-    private func layoutContent(cardSize: NSSize, fullContentHeight: CGFloat) {
+    /// The web preview's surface. One per panel, made on first use so a reader who never
+    /// peeks an external link never pays for a web process.
+    private func ensureWebView() -> WKWebView {
+        if let webView { return webView }
+        let web = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        web.translatesAutoresizingMaskIntoConstraints = true
+        card.addSubview(web)
+        // The header starts as the host; the page's own title replaces it once known — but
+        // never while the card has moved on to showing a section.
+        webTitleObservation = web.observe(\.title) { [weak self] web, _ in
+            guard let self, !web.isHidden, let title = web.title, !title.isEmpty else { return }
+            titleField.stringValue = title
+        }
+        webView = web
+        return web
+    }
+
+    /// The chrome every presentation shares: the card's own frame, the title strip, and the
+    /// hairline under it.
+    private func layoutChrome(cardSize: NSSize) {
         card.frame = NSRect(origin: .zero, size: cardSize)
         let titleHeight = titleField.intrinsicContentSize.height
         titleField.frame = NSRect(
@@ -374,6 +494,10 @@ final class OutlinePreviewController {
         separator.frame = NSRect(
             x: 0, y: cardSize.height - Self.headerHeight, width: cardSize.width, height: 1
         )
+    }
+
+    private func layoutContent(cardSize: NSSize, fullContentHeight: CGFloat) {
+        layoutChrome(cardSize: cardSize)
         scrollView.frame = NSRect(
             x: Self.padding, y: Self.padding,
             width: cardSize.width - Self.padding * 2,
@@ -381,7 +505,9 @@ final class OutlinePreviewController {
         )
         stackView.frame = NSRect(
             x: 0, y: 0,
-            width: scrollView.contentSize.width,
+            // The width `fill` measured at — narrower than the clip when the content scrolls,
+            // leaving the trailing gutter to the overlay scroller.
+            width: stackView.frame.width,
             height: max(fullContentHeight, scrollView.contentSize.height)
         )
     }
@@ -397,13 +523,13 @@ final class OutlinePreviewController {
         card.showsBottomFade = clip.maxY < stackView.frame.height - 1
     }
 
-    /// The card sits to the right of the row, vertically centered on it, kept on screen.
+    /// The card sits to the right of the anchor, vertically centered on it, kept on screen.
     private func clampedFrame(
-        for size: NSSize, besideRow rowScreen: NSRect, on screen: NSScreen?
+        for size: NSSize, besideAnchor anchor: NSRect, on screen: NSScreen?
     ) -> NSRect {
         var frame = NSRect(
-            x: rowScreen.maxX + Self.anchorGap,
-            y: rowScreen.midY - size.height / 2,
+            x: anchor.maxX + Self.anchorGap,
+            y: anchor.midY - size.height / 2,
             width: size.width, height: size.height
         )
         guard let visible = screen?.visibleFrame else { return frame }
@@ -477,10 +603,29 @@ private final class PreviewCardView: NSView {
     private static let fadeHeight: CGFloat = 44
 
     private let fade = CAGradientLayer()
+    private var hoverArea: NSTrackingArea?
 
     var showsBottomFade = false {
         didSet { if showsBottomFade != oldValue { needsDisplay = true } }
     }
+
+    /// Whether the pointer is over the card — a hover presentation stays up while it is.
+    var onHoverChange: ((Bool) -> Void)?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverArea { removeTrackingArea(hoverArea) }
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+            owner: self
+        )
+        addTrackingArea(area)
+        hoverArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { onHoverChange?(true) }
+    override func mouseExited(with event: NSEvent) { onHoverChange?(false) }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -494,7 +639,7 @@ private final class PreviewCardView: NSView {
 
     override func updateLayer() {
         guard let layer else { return }
-        layer.cornerRadius = OutlinePreviewController.cornerRadius
+        layer.cornerRadius = PeekPreviewPanel.cornerRadius
         layer.cornerCurve = .continuous
         layer.masksToBounds = true
         effectiveAppearance.performAsCurrentDrawingAppearance {
