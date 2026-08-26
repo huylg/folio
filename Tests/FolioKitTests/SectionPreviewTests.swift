@@ -463,6 +463,20 @@ final class LinkPeekIntegrationTests: XCTestCase {
         RunLoop.main.run(until: Date().addingTimeInterval(seconds))
     }
 
+    /// Spins the run loop until `condition` holds, or the timeout passes. Fixed spins sized
+    /// on a fast machine starve the hover timer on a loaded CI runner; a condition cannot.
+    @discardableResult
+    private func waitUntil(
+        _ timeout: TimeInterval = 2, _ condition: () -> Bool
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        return condition()
+    }
+
     func testOnlyDestinationsWithSomethingToShowCanPeek() throws {
         let (view, _) = try pane()
         XCTAssertTrue(view.component(view, canPeekLink: "#gamma"))
@@ -491,7 +505,7 @@ final class LinkPeekIntegrationTests: XCTestCase {
         view.onHeadingChange = { reported.append($0) }
 
         text.hoverMoved(to: NSPoint(x: rect.midX, y: rect.midY))
-        spin(0.08)
+        waitUntil { window.childWindows?.isEmpty == false }
         let card = try XCTUnwrap(window.childWindows?.first?.contentView,
                                  "the hover must present the card")
         func contains<T: NSView>(_ type: T.Type, in view: NSView) -> Bool {
@@ -502,7 +516,7 @@ final class LinkPeekIntegrationTests: XCTestCase {
         XCTAssertTrue(reported.isEmpty, "a web peek must not navigate the document")
 
         view.linkPeek.hide()
-        spin(0.3)
+        waitUntil { (window.childWindows ?? []).isEmpty }
     }
 
     /// Navigation belongs to the click alone, delivered through NSTextView's own
@@ -535,8 +549,8 @@ final class LinkPeekIntegrationTests: XCTestCase {
         let overlays = window.contentView?.subviews.count ?? 0
 
         text.hoverMoved(to: NSPoint(x: rect.midX, y: rect.midY))
-        spin(0.08)
-        XCTAssertEqual(window.childWindows?.count, 1, "resting on the link must show the card")
+        XCTAssertTrue(waitUntil { window.childWindows?.isEmpty == false },
+                      "resting on the link must show the card")
         XCTAssertEqual(window.contentView?.subviews.count, overlays + 1,
                        "a light veil must dim the window behind the card")
         XCTAssertEqual(view.scrollView.contentView.bounds.origin, origin,
@@ -555,7 +569,7 @@ final class LinkPeekIntegrationTests: XCTestCase {
                       "the card must show Gamma's table through the reading engine")
 
         view.linkPeek.hide()
-        spin(0.3)
+        XCTAssertTrue(waitUntil { (window.childWindows ?? []).isEmpty })
         XCTAssertEqual(window.contentView?.subviews.count, overlays,
                        "the veil must go away with the card")
     }
@@ -567,13 +581,11 @@ final class LinkPeekIntegrationTests: XCTestCase {
         let (text, rect) = try linkView(in: view)
 
         text.hoverMoved(to: NSPoint(x: rect.midX, y: rect.midY))
-        spin(0.08)
-        XCTAssertTrue(view.linkPeek.isShown)
+        XCTAssertTrue(waitUntil { view.linkPeek.isShown })
 
         text.hoverMoved(to: NSPoint(x: rect.midX, y: rect.maxY + 60))
-        spin(0.4)
-        XCTAssertEqual(window.childWindows?.count ?? 0, 0,
-                       "the card must go once the pointer has moved on")
+        XCTAssertTrue(waitUntil { (window.childWindows ?? []).isEmpty },
+                      "the card must go once the pointer has moved on")
     }
 
     func testPointerOnTheCardKeepsTheHoverCardUp() throws {
@@ -583,7 +595,7 @@ final class LinkPeekIntegrationTests: XCTestCase {
         let (text, rect) = try linkView(in: view)
 
         text.hoverMoved(to: NSPoint(x: rect.midX, y: rect.midY))
-        spin(0.08)
+        waitUntil { window.childWindows?.isEmpty == false }
         let card = try XCTUnwrap(window.childWindows?.first)
         // The pointer travels from the link onto the card.
         PeekPreviewPanel.pointerLocation = {
@@ -598,8 +610,7 @@ final class LinkPeekIntegrationTests: XCTestCase {
         // And once the pointer leaves the card too, the card goes.
         PeekPreviewPanel.pointerLocation = { NSPoint(x: -100_000, y: -100_000) }
         view.componentHoverLeftLink(text)
-        spin(0.4)
-        XCTAssertEqual(window.childWindows?.count ?? 0, 0)
+        XCTAssertTrue(waitUntil { (window.childWindows ?? []).isEmpty })
     }
 
     /// The click is delivered through `clicked(onLink:)` directly — synthesized events cannot
@@ -610,17 +621,15 @@ final class LinkPeekIntegrationTests: XCTestCase {
         let (text, rect) = try linkView(in: view)
 
         text.hoverMoved(to: NSPoint(x: rect.midX, y: rect.midY))
-        spin(0.08)
-        XCTAssertTrue(view.linkPeek.isShown)
+        XCTAssertTrue(waitUntil { view.linkPeek.isShown })
 
         var reported: [Int] = []
         view.onHeadingChange = { reported.append($0) }
         text.clicked(onLink: "#gamma", at: 0)
-        spin(0.3)
 
         XCTAssertEqual(reported.last, 1, "the click must still navigate to Gamma")
-        XCTAssertEqual(window.childWindows?.count ?? 0, 0,
-                       "and the glance must not outlive the decision to go")
+        XCTAssertTrue(waitUntil { (window.childWindows ?? []).isEmpty },
+                      "and the glance must not outlive the decision to go")
     }
 }
 
@@ -699,7 +708,12 @@ final class RelativeFilePeekTests: XCTestCase {
     ) throws -> NSView {
         let (text, rect) = try linkView(in: view, destination: destination)
         text.hoverMoved(to: NSPoint(x: rect.midX, y: rect.midY))
-        RunLoop.main.run(until: Date().addingTimeInterval(0.08))
+        // A condition, not a fixed spin: a loaded CI runner can starve the hover timer for
+        // longer than any spin sized on a fast machine.
+        let deadline = Date().addingTimeInterval(2)
+        while Date() < deadline, window.childWindows?.isEmpty != false {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
         return try XCTUnwrap(window.childWindows?.first?.contentView,
                              "the hover must present the card")
     }
