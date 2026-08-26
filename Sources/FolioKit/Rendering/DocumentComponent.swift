@@ -37,10 +37,29 @@ public struct DocumentComponent {
     /// on top of view geometry.
     public let range: NSRange
 
-    public init(kind: BlockKind, content: Content, range: NSRange) {
+    /// The items inside a `.text` list component, as character ranges relative to its own
+    /// attributed string — in reading order, tiling it exactly. `nil` for anything that is not
+    /// a list of several items.
+    ///
+    /// A list is one component so selection covers it whole, but its items are self-contained,
+    /// which makes their boundaries the places a list too tall for a page can be broken — the
+    /// way a table breaks at rows.
+    public let parts: [NSRange]?
+
+    public init(kind: BlockKind, content: Content, range: NSRange, parts: [NSRange]? = nil) {
         self.kind = kind
         self.content = content
         self.range = range
+        self.parts = parts
+    }
+
+    /// The single character range covering `items` of `parts`, for slicing a page of a list.
+    public func partRange(_ items: Range<Int>) -> NSRange? {
+        guard let parts, !items.isEmpty,
+              items.lowerBound >= 0, items.upperBound <= parts.count else { return nil }
+        let first = parts[items.lowerBound]
+        let last = parts[items.upperBound - 1]
+        return NSRange(location: first.location, length: NSMaxRange(last) - first.location)
     }
 
     /// Plain text for the clipboard.
@@ -98,7 +117,7 @@ public enum ComponentSplitter {
                     if case .listItem = kind { return true } else { return false }
                 }
                 components.append(text(from: attributed, blocks: blocks,
-                                      first: index, end: end))
+                                      first: index, end: end, itemized: true))
                 index = end
 
             case .blockQuote:
@@ -142,17 +161,33 @@ public enum ComponentSplitter {
 
     /// One text component spanning `blocks[first ..< end]`, newlines between them included so
     /// each block stays its own paragraph.
+    ///
+    /// `itemized` keeps the blocks' boundaries as `parts`: each part runs from its block's start
+    /// to the next block's, so the newline separating two items travels with the item before it
+    /// and the parts tile the component exactly.
     private static func text(
         from attributed: NSAttributedString,
         blocks: [BlockRecord],
         first: Int,
-        end: Int
+        end: Int,
+        itemized: Bool = false
     ) -> DocumentComponent {
         let range = union(blocks[first], through: blocks[end - 1])
+        var parts: [NSRange]?
+        if itemized, end - first > 1 {
+            parts = (first..<end).map { block in
+                let start = blocks[block].range.location - range.location
+                let next = block + 1 < end
+                    ? blocks[block + 1].range.location - range.location
+                    : range.length
+                return NSRange(location: start, length: next - start)
+            }
+        }
         return DocumentComponent(
             kind: blocks[first].kind,
             content: .text(attributed.attributedSubstring(from: range)),
-            range: range
+            range: range,
+            parts: parts
         )
     }
 

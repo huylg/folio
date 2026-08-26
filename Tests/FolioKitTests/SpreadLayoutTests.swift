@@ -446,6 +446,31 @@ extension SpreadLayoutTests {
                        column * CGFloat(columns) + DocumentStackView.gutter * CGFloat(columns - 1),
                        accuracy: 1,
                        "a spanning component should be the whole page wide")
+
+        // A page of its own means a fresh spread: it is emitted from the spread's top the whole
+        // page wide, so following the heading into the same spread drew it *over* the heading.
+        try assertNoComponentOverlaps(in: view)
+    }
+
+    /// No two components' pages may share any pixels, whatever pagination decided for them.
+    func assertNoComponentOverlaps(in view: NativeDocumentView,
+                                   file: StaticString = #filePath, line: UInt = #line) throws {
+        let stack = view.stackView
+        let componentCount = try XCTUnwrap(view.built).components.count
+        let placed = (0..<componentCount).flatMap { index in
+            stack.frames(ofComponent: index).map { (component: index, frame: $0) }
+        }
+        for (position, first) in placed.enumerated() {
+            for second in placed.dropFirst(position + 1)
+            where first.component != second.component {
+                XCTAssertFalse(
+                    first.frame.intersects(second.frame),
+                    "components \(first.component) and \(second.component) overlap: "
+                        + "\(first.frame) vs \(second.frame)",
+                    file: file, line: line
+                )
+            }
+        }
     }
 
     /// A single column is not paginated, so nothing is split there.
@@ -648,5 +673,124 @@ extension SpreadLayoutTests {
         XCTAssertEqual(view.stackView.columnCount, 1)
         XCTAssertTrue(view.stackView.continuationMarks().isEmpty)
         XCTAssertFalse(view.stackView.chapterContinues(afterSpread: 0))
+    }
+}
+
+/// What happens to a list that does not fit a column.
+///
+/// It is paginated at item boundaries, the way a table breaks at rows: the items are
+/// self-contained, so a column break between two bullets reads as a page turn. It used to take
+/// a page of its own across every column, which for prose meant lines a whole spread wide — a
+/// reading measure nobody chose.
+extension SpreadLayoutTests {
+
+    /// A bullet list far taller than a column, every item long enough to wrap.
+    private func longListDocument(items: Int) throws -> MarkdownDocument {
+        var lines = ["# Decisions", ""]
+        for item in 1...items {
+            lines.append("- Decision \(item): a sentence long enough to wrap at the reading "
+                         + "measure once or twice, so every item has real height of its own.")
+        }
+        lines += ["", "After the list.", ""]
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("folio-list-\(UUID().uuidString).md")
+        try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        return try MarkdownDocument(url: url)
+    }
+
+    private func paneWithLongList(items: Int = 60) throws -> (NativeDocumentView, Int) {
+        let view = NativeDocumentView(metrics: metrics)
+        view.frame = NSRect(x: 0, y: 0, width: paneWidth(forColumns: 2), height: 700)
+        let window = TestWindow(contentRect: view.frame, styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.contentView = view
+        window.orderBack(nil)
+        view.render(document: try longListDocument(items: items), metrics: metrics)
+        view.layoutSubtreeIfNeeded()
+        for _ in 0..<20 {
+            _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+        let list = try XCTUnwrap(view.built?.components.firstIndex {
+            if case .listItem = $0.kind { return true } else { return false }
+        })
+        return (view, list)
+    }
+
+    /// The pages tile the list exactly: every item on exactly one page, in order.
+    func testATallListIsPaginatedAtItemBoundaries() throws {
+        let (view, list) = try paneWithLongList()
+        let stack = view.stackView
+        XCTAssertFalse(stack.spans(component: list), "the list should paginate, not span")
+        XCTAssertGreaterThan(stack.placementCount(ofComponent: list), 1,
+                             "the fixture list should need several pages")
+
+        let component = try XCTUnwrap(view.built).components[list]
+        let parts = try XCTUnwrap(component.parts, "a list of several items should carry parts")
+        guard case .text(let attributed) = component.content else { return XCTFail("not text") }
+        // The parts tile the component's text, so the slices lose nothing between them.
+        XCTAssertEqual(parts.first?.location, 0)
+        for (part, next) in zip(parts, parts.dropFirst()) {
+            XCTAssertEqual(NSMaxRange(part), next.location, "parts leave a gap or overlap")
+        }
+        XCTAssertEqual(parts.last.map(NSMaxRange), attributed.length)
+
+        let ranges = stack.rowRanges(ofComponent: list)
+        var expected = 0
+        for range in ranges {
+            XCTAssertEqual(range.lowerBound, expected, "pages skip or repeat items: \(ranges)")
+            XCTAssertGreaterThan(range.count, 0, "an empty page of list")
+            expected = range.upperBound
+        }
+        XCTAssertEqual(expected, parts.count, "the last items never got a page")
+    }
+
+    /// No page of the list is taller than the page it sits on, and none sits on another
+    /// component.
+    func testSplitListPagesFitTheirColumn() throws {
+        let (view, list) = try paneWithLongList()
+        let stack = view.stackView
+        let target = stack.spreadHeight
+        XCTAssertGreaterThan(target, 0)
+        for frame in stack.frames(ofComponent: list) {
+            XCTAssertLessThanOrEqual(frame.height, target + 1,
+                                     "a page of the list overflows the column")
+        }
+        try assertNoComponentOverlaps(in: view)
+    }
+
+    /// A split list starts in the room that is left, not on the next page — same rule as the
+    /// table, for the same reason.
+    func testASplitListStartsInTheRoomThatIsLeft() throws {
+        let (view, list) = try paneWithLongList()
+        let stack = view.stackView
+        XCTAssertGreaterThan(list, 0, "the fixture should have content before the list")
+        let heading = stack.frame(ofComponent: list - 1)
+        let first = stack.frame(ofComponent: list)
+        XCTAssertEqual(stack.spreadIndex(ofComponent: list),
+                       stack.spreadIndex(ofComponent: list - 1),
+                       "the list should start on the heading's page")
+        XCTAssertGreaterThan(first.minY, heading.minY,
+                             "the first page of the list should sit under its heading")
+    }
+
+    /// A single column is a single page, so nothing is split there.
+    func testSingleColumnDoesNotSplitLists() throws {
+        let view = NativeDocumentView(metrics: metrics)
+        view.frame = NSRect(x: 0, y: 0, width: paneWidth(forColumns: 1), height: 700)
+        let window = TestWindow(contentRect: view.frame, styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.contentView = view
+        window.orderBack(nil)
+        view.render(document: try longListDocument(items: 60), metrics: metrics)
+        view.layoutSubtreeIfNeeded()
+        for _ in 0..<20 {
+            _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+        let list = try XCTUnwrap(view.built?.components.firstIndex {
+            if case .listItem = $0.kind { return true } else { return false }
+        })
+        XCTAssertEqual(view.stackView.columnCount, 1)
+        XCTAssertEqual(view.stackView.placementCount(ofComponent: list), 1)
     }
 }
