@@ -47,6 +47,17 @@ spread the width will hold.
 
 Dark appearance only. Contrast is checked in the test suite rather than eyeballed.
 
+## Download and install
+
+1. Open the [latest GitHub release](https://github.com/huylg/folio/releases/latest).
+2. Under **Assets**, download the `Folio-<version>.dmg` file.
+3. Open the disk image and drag **Folio** to the **Applications** folder.
+4. The app is signed ad hoc and is not notarized, so on first launch Control-click Folio in Finder,
+   choose **Open**, then confirm that you want to open it. After that, it opens normally.
+
+Folio requires macOS 13 or later. Each release also includes a `.sha256` file for verifying the
+download before installation.
+
 ## Updating
 
 Folio checks its own GitHub releases and, when there is a newer one, says so with a small pill in
@@ -149,6 +160,5 @@ Two GitHub Actions workflows, both on `macos-26`:
   the image is built — a bundle that still claimed the template's version would leave the updater
   unable to tell one release from the next.
 
-The bundle is signed ad hoc, so a downloaded build is quarantined until it is opened once from the
-Finder's context menu. An update installed from inside the app clears the flag itself, so that step
-is only for the first copy.
+An update installed from inside the app clears the quarantine flag itself, so the first-launch step
+under **Download and install** is only needed for the first copy.
