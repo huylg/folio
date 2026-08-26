@@ -1,77 +1,9 @@
 import AppKit
 import WebKit
 
-/// The press-to-peek gesture's state, separated from the view that receives the events so the
-/// transitions can be tested without synthesizing them.
-///
-/// A quick click navigates; a press that crosses the hold threshold (or force-clicks) becomes
-/// a preview, and its release is swallowed — peeking at something must not also go there.
-/// The release leaves the card up: from there it belongs to the dimmed backdrop, and the next
-/// click anywhere outside it closes it.
-///
-/// A "row" is whatever the owner presses on: the outline uses table rows, the reading pane a
-/// single link (0 while the pointer is on it). -1 always means "off the targets".
-final class PressPeekState {
-
-    enum Effect: Equatable {
-        case none
-        /// Present the card for a row (-1: pointer off the rows, keep the card hidden).
-        case show(Int)
-        /// The card is up and the pointer scrubbed to another row (-1 hides, press keeps going).
-        case update(Int)
-        /// Released after a preview: the card stays up, pinned; navigate nowhere.
-        case pin
-        /// Released before the threshold on the pressed row: a plain click.
-        case click(Int)
-    }
-
-    private(set) var pressedRow = -1
-    private(set) var isPreviewing = false
-    private var previewRow = -1
-
-    func pressBegan(row: Int) {
-        pressedRow = row
-        isPreviewing = false
-        previewRow = -1
-    }
-
-    /// The hold timer elapsed with the button still down.
-    func holdFired(pointerRow: Int) -> Effect {
-        guard pressedRow >= 0, !isPreviewing else { return .none }
-        isPreviewing = true
-        previewRow = pointerRow
-        return .show(pointerRow)
-    }
-
-    /// A force click is the same preview, sooner.
-    func forceClicked(pointerRow: Int) -> Effect {
-        holdFired(pointerRow: pointerRow)
-    }
-
-    func pointerMoved(toRow row: Int) -> Effect {
-        guard isPreviewing, row != previewRow else { return .none }
-        previewRow = row
-        return .update(row)
-    }
-
-    func released(pointerRow: Int) -> Effect {
-        defer { cancel() }
-        guard pressedRow >= 0 else { return .none }
-        if isPreviewing { return .pin }
-        // Released elsewhere than it was pressed: not a click, matching NSTableView's feel.
-        return pointerRow == pressedRow ? .click(pointerRow) : .none
-    }
-
-    func cancel() {
-        pressedRow = -1
-        isPreviewing = false
-        previewRow = -1
-    }
-}
-
-/// The Safari-link-preview-style peek card: an arrowless rounded panel beside whatever was
-/// pressed — an outline row, a link in the page — showing a section's content while the press
-/// holds and after it pins.
+/// The Safari-link-preview-style peek card: an arrowless rounded panel beside whatever the
+/// pointer rests on — an outline row, a link in the page — showing the target's content for
+/// as long as the hover lasts.
 ///
 /// A borderless child window rather than an `NSPopover`, which always draws an anchor arrow
 /// and its own bubble chrome. The panel never activates and never becomes key.
@@ -81,14 +13,12 @@ final class PressPeekState {
 /// the table view, a diagram is the diagram, a code card keeps its highlighting and header,
 /// and the card cannot drift from the document it is previewing.
 ///
-/// While the card is up, the window behind it is dimmed by an overlay that owns dismissal:
-/// releasing the press pins the card, and the next click (or scroll) anywhere outside it —
-/// which lands on the overlay — closes it. A click on the card itself lands on the panel and
-/// does nothing. The press that summoned the card is unaffected by the overlay appearing
-/// beneath the pointer: AppKit keeps delivering a captured press's events to the pressed view.
+/// While the card is up, a light veil dims the window behind it — focusing the eye without
+/// taking anything away: the veil never intercepts events, so the layer beneath keeps
+/// hovering, scrolling, and clicking as before.
 ///
 /// Owns nothing about the gesture: callers anchor it to a screen rect — a row's, a link's —
-/// and route `PressPeekState`'s effects into `show`/`hide` themselves.
+/// and call `show`/`hide` themselves as the pointer comes and goes.
 final class PeekPreviewPanel {
 
     /// Fixed, rather than shrunk to the content as it was while the card held a flat string
@@ -111,19 +41,18 @@ final class PeekPreviewPanel {
     static let appearScale: CGFloat = 0.96
     static var appearDuration: TimeInterval = 0.15
     static var fadeOutDuration: TimeInterval = 0.10
+    /// How dark the veil behind the card is. Light on purpose: it focuses the eye on the
+    /// card without claiming the layer beneath is inert — which it is not, a hover glance
+    /// leaves everything under it live.
+    static let dimmingAlpha: CGFloat = 0.12
 
-    /// Asked for when the reader clicks or scrolls outside the pinned card, or the window
-    /// resizes or resigns key under it. The owner ends the whole gesture, not just the card.
+    /// Asked for when Escape is pressed, or the window resizes or resigns key under the card.
+    /// The owner ends the whole hover, not just the card.
     var onDismissRequest: (() -> Void)?
 
-    /// Fired when the pointer enters or leaves the card. Owners of a hover (backdrop-less)
-    /// presentation use it to keep the card up while it is being read — and scrolled — and to
-    /// let it go once the pointer moves on.
+    /// Fired when the pointer enters or leaves the card. Owners use it to keep the card up
+    /// while it is being read — and scrolled — and to let it go once the pointer moves on.
     var onCardHoverChange: ((Bool) -> Void)?
-
-    /// Whether the current presentation dims and blocks the layer beneath. Meaningless while
-    /// `isShown` is false.
-    private(set) var presentsBackdrop = true
 
     /// Where the pointer is, for the hover checks. Injected so a test's card is not haunted by
     /// wherever the machine's real mouse happens to rest.
@@ -161,15 +90,11 @@ final class PeekPreviewPanel {
     /// Presents (or, if already up, moves and refills) the card beside `anchor`, a rect in
     /// screen coordinates — an outline row's, a link's.
     ///
-    /// With `backdrop` the card is a pinned peek: the layer beneath dims and goes inert, and
-    /// the backdrop owns dismissal. Without it the card is a hover glance — nothing beneath
-    /// changes, and the owner hides it when the pointer moves on. A hover that turns into a
-    /// press upgrades in place: showing again with `backdrop: true` adds the dimming without
-    /// re-running the entrance.
+    /// The card is a glance: nothing beneath it changes, and the owner hides it when the
+    /// pointer moves on.
     func show(
         _ section: SectionPreview, title: String,
-        anchoredTo anchor: NSRect, in window: NSWindow,
-        backdrop: Bool = true
+        anchoredTo anchor: NSRect, in window: NSWindow
     ) {
         let panel = self.panel ?? makePanel()
         self.panel = panel
@@ -209,16 +134,13 @@ final class PeekPreviewPanel {
         stackView.populateVisible()
         updateBottomFade()
 
-        present(cardSize: cardSize, anchoredTo: anchor, in: window, backdrop: backdrop)
+        present(cardSize: cardSize, anchoredTo: anchor, in: window)
     }
 
     /// Presents (or moves) the card as a live web preview of `url` — for links that leave the
     /// vault entirely. The header starts as the host and takes the page's title once it loads,
     /// the way the section card's header names its section.
-    func showWeb(
-        _ url: URL, anchoredTo anchor: NSRect, in window: NSWindow,
-        backdrop: Bool = true
-    ) {
+    func showWeb(_ url: URL, anchoredTo anchor: NSRect, in window: NSWindow) {
         let panel = self.panel ?? makePanel()
         self.panel = panel
 
@@ -241,32 +163,24 @@ final class PeekPreviewPanel {
                                height: cardSize.height - Self.headerHeight)
         if webView.url != url { webView.load(URLRequest(url: url)) }
 
-        present(cardSize: cardSize, anchoredTo: anchor, in: window, backdrop: backdrop)
+        present(cardSize: cardSize, anchoredTo: anchor, in: window)
     }
 
     /// The shared tail of both `show`s: places the sized card beside the anchor and runs the
-    /// entrance — or, if the card is already up, moves it there (upgrading a hover to a pinned
-    /// presentation in place when `backdrop` arrives on a card that had none).
-    private func present(
-        cardSize: NSSize, anchoredTo anchor: NSRect, in window: NSWindow, backdrop: Bool
-    ) {
+    /// entrance — or, if the card is already up, moves it there.
+    private func present(cardSize: NSSize, anchoredTo anchor: NSRect, in window: NSWindow) {
         guard let panel else { return }
         let frame = clampedFrame(for: cardSize, besideAnchor: anchor, on: window.screen)
 
         if isShown {
-            if backdrop, !presentsBackdrop {
-                presentsBackdrop = true
-                presentDimming(in: window)
-            }
-            // Scrubbing: same card, new anchor. Moved without the entrance animation — the card
-            // tracking the pointer should read like one object following it.
+            // Same card, new anchor. Moved without the entrance animation — the card tracking
+            // the pointer should read like one object following it.
             panel.setFrame(frame, display: true)
             return
         }
 
         isShown = true
-        presentsBackdrop = backdrop
-        if backdrop { presentDimming(in: window) }
+        presentDimming(in: window)
         watch(window)
         window.addChildWindow(panel, ordered: .above)
         if Ink.reduceMotion {
@@ -344,14 +258,11 @@ final class PeekPreviewPanel {
         })
     }
 
-    // MARK: Backdrop
-
-    /// Dims everything behind the card. The overlay sits over the window's content, so it is
-    /// also what an outside click lands on — dismissal and dimming are one object, and the
-    /// first click closes the card without also activating whatever was under the pointer.
+    /// Lays the veil over the window's content while the card is up. It arrives with the
+    /// card's own fade, and — unlike the card — never answers the pointer: everything under
+    /// it keeps hovering, scrolling, and clicking as if it were not there.
     private func presentDimming(in window: NSWindow) {
         guard let content = window.contentView else { return }
-        dimming.onDismiss = { [weak self] in self?.onDismissRequest?() }
         if dimming.superview !== content {
             dimming.frame = content.bounds
             dimming.autoresizingMask = [.width, .height]
@@ -369,8 +280,8 @@ final class PeekPreviewPanel {
         }
     }
 
-    /// A pinned card cannot outlive the geometry it is anchored to or a window that is no
-    /// longer in front: a resize reflows the content, and losing key means the reader left.
+    /// The card cannot outlive the geometry it is anchored to or a window that is no longer
+    /// in front: a resize reflows the content, and losing key means the reader left.
     /// Escape closes it the way it closes any transient panel.
     private func watch(_ window: NSWindow) {
         unwatch()
@@ -411,9 +322,9 @@ final class PeekPreviewPanel {
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.isReleasedWhenClosed = false
-        // The panel absorbs clicks on itself: the card is "inside", everything that lands on
-        // the dimming overlay beneath is "outside" and dismisses. Non-activating, so even an
-        // absorbed click never moves key or focus.
+        // The panel absorbs clicks on itself so a click into the card cannot fall through to
+        // whatever sits beneath it. Non-activating, so even an absorbed click never moves key
+        // or focus.
         panel.ignoresMouseEvents = false
         panel.animationBehavior = .none
 
@@ -566,14 +477,12 @@ private final class PreviewBlockHost: BlockHost {
     }
 }
 
-/// The dimmed backdrop behind a pinned card.
+/// The light veil behind a hover card, focusing the eye on it.
 ///
-/// It is deliberately a control as well as a tint: any click or scroll that lands on it asks
-/// for dismissal and goes no further, so closing the card can never accidentally follow a
-/// link or move the reading position underneath it.
+/// Deliberately a tint and nothing more: a hover glance must leave the layer beneath fully
+/// live — the pointer keeps hovering rows and links, and a click still lands where it aims —
+/// so the veil never answers hit-testing.
 private final class DimmingView: NSView {
-
-    var onDismiss: (() -> Void)?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -586,13 +495,12 @@ private final class DimmingView: NSView {
     override var wantsUpdateLayer: Bool { true }
 
     override func updateLayer() {
-        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.28).cgColor
+        layer?.backgroundColor = NSColor.black
+            .withAlphaComponent(PeekPreviewPanel.dimmingAlpha).cgColor
     }
 
-    override func mouseDown(with event: NSEvent) { onDismiss?() }
-    override func rightMouseDown(with event: NSEvent) { onDismiss?() }
-    override func otherMouseDown(with event: NSEvent) { onDismiss?() }
-    override func scrollWheel(with event: NSEvent) { onDismiss?() }
+    /// Feedback, never a control.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 /// The card's surface: rounded, hairline-bordered, on the page color, with an optional fade
