@@ -69,6 +69,18 @@ public struct BuiltDocument {
         return components.lastIndex { $0.range.location <= location }
     }
 
+    /// The character range of the section opened by outline entry `index`: from the heading
+    /// itself to the next heading at the same or a shallower level, else the end of the
+    /// document. Relies on the `headings[i].outlineIndex == i` alignment documented above.
+    public func sectionRange(forOutlineIndex index: Int) -> NSRange? {
+        guard headings.indices.contains(index) else { return nil }
+        let start = headings[index].range.location
+        let level = headings[index].level
+        let end = headings[(index + 1)...].first { $0.level <= level }?.range.location
+            ?? attributed.length
+        return NSRange(location: start, length: max(0, end - start))
+    }
+
     /// The block containing `location`.
     public func block(at location: Int) -> BlockRecord? {
         blocks.last { $0.range.location <= location && location < NSMaxRange($0.range) }

@@ -4,7 +4,11 @@ import AppKit
 final class OutlineViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
 
     var onSelect: ((String) -> Void)?
+    /// Pull-based provider for the peek card's content, so a card can never show a stale
+    /// section after the document re-renders.
+    var onPreviewContent: ((Int) -> SectionPreview?)?
 
+    private let preview = OutlinePreviewController()
     private var entries: [OutlineEntry] = []
     private var highlightedIndex = 0
     /// Every section on screen. The current one is in here too, and outranks the group marking.
@@ -32,8 +36,11 @@ final class OutlineViewController: NSViewController, NSTableViewDataSource, NSTa
         tableView.addTableColumn(col)
         tableView.dataSource = self
         tableView.delegate = self
-        tableView.target = self
-        tableView.action = #selector(rowClicked(_:))
+        // The table owns its own press tracking (click vs press-to-peek), so there is no
+        // target/action pair — a quick click arrives as `onRowClick`.
+        tableView.onRowClick = { [weak self] row in self?.rowClicked(row) }
+        tableView.onPreviewRow = { [weak self] row in self?.previewRow(row) }
+        preview.onDismissRequest = { [weak self] in self?.cancelPreview() }
 
         scrollView.documentView = tableView
         scrollView.hasVerticalScroller = true
@@ -58,15 +65,25 @@ final class OutlineViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     func clear() {
+        cancelPreview()
         entries = []
         highlightedIndex = 0
         tableView.reloadData()
     }
 
     func update(document: MarkdownDocument) {
+        cancelPreview()
         entries = document.outline
         highlightedIndex = 0
         tableView.reloadData()
+    }
+
+    /// Ends any press-to-peek in flight: a document swap or a settings reflow invalidates
+    /// both the card's content and the geometry it was anchored to.
+    func cancelPreview() {
+        tableView.cancelPress()
+        preview.hide()
+        tableView.hoverSuppressed = false
     }
 
     /// Marks every section that is on screen.
@@ -151,13 +168,25 @@ final class OutlineViewController: NSViewController, NSTableViewDataSource, NSTa
         return cell
     }
 
-    @objc private func rowClicked(_ sender: Any?) {
-        let row = tableView.clickedRow
+    private func rowClicked(_ row: Int) {
         guard row >= 0, row < entries.count else { return }
         // Move the highlight on the click rather than waiting for the reading pane to scroll and
         // report back: the pill should follow the pointer immediately.
         highlight(index: row)
         onSelect?(entries[row].anchor)
+    }
+
+    /// Shows the peek card for a row, or hides it while the press scrubs off the rows or onto
+    /// a section with nothing under its heading. Hover goes quiet with the card up — the
+    /// sidebar is the dimmed layer then, and nothing dimmed should answer the pointer.
+    private func previewRow(_ row: Int) {
+        defer { tableView.hoverSuppressed = preview.isShown }
+        guard row >= 0, row < entries.count, let section = onPreviewContent?(row) else {
+            preview.hide()
+            return
+        }
+        preview.show(section, title: entries[row].title,
+                     anchoredToRow: row, in: tableView)
     }
 }
 
@@ -166,6 +195,34 @@ final class OutlineViewController: NSViewController, NSTableViewDataSource, NSTa
 /// Hover is computed from one mouse position and pushed to the row views, rather than each row
 /// tracking its own — see `OutlineRowView.isHovered`.
 final class OutlineTableView: NSTableView {
+
+    /// How long a press has to hold still before it becomes a peek instead of a click. A
+    /// `static var` so tests can zero it.
+    static var holdDelay: TimeInterval = 0.35
+
+    /// A quick click, released before the hold threshold on the row it pressed.
+    var onRowClick: ((Int) -> Void)?
+    /// The peek trigger fired (hold elapsed or force click) or the held pointer scrubbed to
+    /// another row; -1 means the pointer is off the rows and the card should hide.
+    var onPreviewRow: ((Int) -> Void)?
+
+    private let press = OutlinePressPreviewState()
+    private var holdTimer: Timer?
+    /// The row under the pressed pointer, maintained from the press's own event stream — the
+    /// pointer cannot move while the button is down without a `mouseDragged`, so this is always
+    /// current when the hold timer or a force click needs it, and it keeps the gesture
+    /// deterministic under synthesized events in tests.
+    private var pressPointerRow = -1
+
+    /// While the peek card is up, the sidebar is the dimmed layer under it: pointer feedback
+    /// there would claim an interactivity the backdrop has taken away, so hover is silenced
+    /// wholesale rather than filtered event by event.
+    var hoverSuppressed = false {
+        didSet {
+            guard hoverSuppressed != oldValue else { return }
+            if hoverSuppressed { setHovered(row: -1) } else { refreshHover() }
+        }
+    }
 
     /// The row under the pointer, or -1.
     private(set) var hoveredRow = -1
@@ -255,6 +312,80 @@ final class OutlineTableView: NSTableView {
     override func mouseMoved(with event: NSEvent) { updateHover(with: event) }
     override func mouseExited(with event: NSEvent) { setHovered(row: -1) }
 
+    // MARK: Press-to-peek
+
+    /// Registers for deep-click events; on hardware without pressure they simply never arrive
+    /// and the hold timer is the only path to a peek.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        pressureConfiguration = NSPressureConfiguration(pressureBehavior: .primaryDeepClick)
+    }
+
+    /// Deliberately not calling super: NSTableView's own `mouseDown` runs a tracking loop and
+    /// fires the action on mouse-up, which could not be swallowed after a peek. Selection and
+    /// editing are disabled on this table, so nothing else is lost — a quick click is re-created
+    /// in `mouseUp`, and dragged/up events arrive as ordinary events while the button is down.
+    override func mouseDown(with event: NSEvent) {
+        let row = self.row(at: convert(event.locationInWindow, from: nil))
+        guard row >= 0 else { return }
+        press.pressBegan(row: row)
+        pressPointerRow = row
+        holdTimer?.invalidate()
+        let timer = Timer(timeInterval: Self.holdDelay, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.perform(self.press.holdFired(pointerRow: self.pressPointerRow))
+        }
+        RunLoop.current.add(timer, forMode: .common)
+        holdTimer = timer
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard press.pressedRow >= 0 else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        pressPointerRow = visibleRect.contains(point) ? row(at: point) : -1
+        perform(press.pointerMoved(toRow: pressPointerRow))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        holdTimer?.invalidate()
+        holdTimer = nil
+        perform(press.released(
+            pointerRow: row(at: convert(event.locationInWindow, from: nil))
+        ))
+        pressPointerRow = -1
+    }
+
+    /// A force click is the same peek as the hold, sooner — with the system's own haptic.
+    override func pressureChange(with event: NSEvent) {
+        super.pressureChange(with: event)
+        guard event.stage >= 2 else { return }
+        holdTimer?.invalidate()
+        holdTimer = nil
+        perform(press.forceClicked(pointerRow: pressPointerRow))
+    }
+
+    /// Ends a press in flight without emitting anything; the owner hides the card itself.
+    func cancelPress() {
+        holdTimer?.invalidate()
+        holdTimer = nil
+        press.cancel()
+        pressPointerRow = -1
+    }
+
+    private func perform(_ effect: OutlinePressPreviewState.Effect) {
+        switch effect {
+        case .none:
+            break
+        case .show(let row), .update(let row):
+            onPreviewRow?(row)
+        case .pin:
+            // The release keeps the card up; from here its backdrop owns dismissal.
+            break
+        case .click(let row):
+            onRowClick?(row)
+        }
+    }
+
     override func layout() {
         super.layout()
         resizeGroup()
@@ -284,12 +415,13 @@ final class OutlineTableView: NSTableView {
     }
 
     private func updateHover(with event: NSEvent) {
+        guard !hoverSuppressed else { return }
         setHovered(row: row(at: convert(event.locationInWindow, from: nil)))
     }
 
     /// Re-derives the hovered row from the pointer's current position.
     func refreshHover() {
-        guard let window, window.isKeyWindow || window.isMainWindow else {
+        guard let window, !hoverSuppressed, window.isKeyWindow || window.isMainWindow else {
             setHovered(row: -1)
             return
         }

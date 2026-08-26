@@ -46,6 +46,18 @@ public final class DocumentStackView: NSView {
         didSet { if spreadHeight != oldValue { invalidateMeasurement() } }
     }
 
+    /// The page's breathing room above and below the content.
+    ///
+    /// The reading pane keeps the defaults. A smaller surface reusing this engine — the
+    /// sidebar's peek card — supplies its own chrome and sets these to zero, rather than
+    /// inheriting a page's worth of empty space it has no page for.
+    public var contentInsets: (top: CGFloat, bottom: CGFloat) =
+        (DocumentMetrics.topPadding, DocumentMetrics.bottomPadding) {
+        didSet {
+            if contentInsets != oldValue { invalidateMeasurement() }
+        }
+    }
+
     private func invalidateMeasurement() {
         measuredWidth = 0
         needsLayout = true
@@ -224,7 +236,7 @@ public final class DocumentStackView: NSView {
         measuredWidth = width
 
         resetPlacements()
-        spreadTops = [DocumentMetrics.topPadding]
+        spreadTops = [contentInsets.top]
         spreadHeights = []
         firstPlacement.reserveCapacity(components.count)
 
@@ -369,7 +381,7 @@ public final class DocumentStackView: NSView {
         let lastSpreadHeight = frames.isEmpty ? 0 : used.max() ?? 0
         spreadHeights.append(lastSpreadHeight)
         contentHeight = ((spreadTops.last ?? 0) + lastSpreadHeight
-                            + DocumentMetrics.bottomPadding).rounded(.up)
+                            + contentInsets.bottom).rounded(.up)
         releasePlacementViews()
         applyHeight()
         needsDisplay = true
