@@ -160,6 +160,28 @@ final class UpdateInstallerTests: XCTestCase {
         // leaves the reader, and a CI log, with nothing to act on.
         XCTAssertNotEqual(reason, "The disk image would not mount.",
                           "the refusal should carry the reason hdiutil gave")
+        // And that reason is the one the retry treats as final, so this test is not sitting
+        // through the busy-machine backoff to reach a refusal it was always going to get.
+        XCTAssertFalse(UpdateInstaller.isMachineBusy(reason),
+                       "a file that is not an image should not look like contention: \(reason)")
+    }
+
+    /// The retry only waits out a machine that is busy. Telling the two apart is a matter of
+    /// reading hdiutil's wording, so the wordings themselves are worth pinning: mistaking
+    /// contention for a bad image is the failure that produced the flake this guards against,
+    /// and mistaking a bad image for contention makes every refusal take fifteen seconds.
+    func testOnlyAMachineThatIsBusyIsWorthWaitingFor() {
+        XCTAssertTrue(UpdateInstaller.isMachineBusy(
+            "hdiutil: attach failed - Resource temporarily unavailable"))
+        XCTAssertTrue(UpdateInstaller.isMachineBusy("hdiutil: attach failed - Resource busy"))
+        XCTAssertTrue(UpdateInstaller.isMachineBusy(
+            "hdiutil: attach failed - Device not configured"))
+
+        XCTAssertFalse(UpdateInstaller.isMachineBusy(
+            "hdiutil: attach failed - no mountable file systems"))
+        XCTAssertFalse(UpdateInstaller.isMachineBusy(
+            "hdiutil: attach failed - image not recognized"))
+        XCTAssertFalse(UpdateInstaller.isMachineBusy(""))
     }
 
     // MARK: The happy path — a zip
