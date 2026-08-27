@@ -37,6 +37,20 @@ public final class NativeDocumentView: NSView {
     public let diagramLayouts = DiagramLayoutCache()
     public var pendingWorkCount = 0
 
+    /// The current document's run history: one session per run, keyed by block. Shared with
+    /// any peek card previewing this same document, which is what makes a run started in the
+    /// card appear on the block here — and the block's past runs appear in the card.
+    public let runSessions = RunSessionStore()
+    private var runSessionsToken: UUID?
+
+    /// The run identity and store a surface rendering the current document needs. Nil until a
+    /// document is rendered.
+    var currentRunContext: RunContext? {
+        document.map {
+            RunContext(documentURL: $0.url, rootURL: $0.rootURL, store: runSessions)
+        }
+    }
+
     /// The peek card for a hovered link — the same panel the sidebar's outline uses, anchored
     /// to the link's own rect.
     let linkPeek = PeekPreviewPanel()
@@ -145,6 +159,20 @@ public final class NativeDocumentView: NSView {
             self, selector: #selector(accessibilityDisplayChanged),
             name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil
         )
+
+        // A session appearing, finishing, or closing changes its block's height. When the
+        // block's card exists, the card reports the change itself; this covers a block whose
+        // view has never been created — a run started from a peek card for a block the reader
+        // has not scrolled to — so the page still makes room for its console.
+        runSessionsToken = runSessions.addObserver { [weak self] key in
+            guard let self, let built, let document,
+                  key.documentURL == document.url.standardizedFileURL,
+                  let index = built.components.firstIndex(where: {
+                      $0.range.location == key.location
+                  })
+            else { return }
+            stackView.remeasureComponent(at: index)
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("not supported") }
@@ -200,6 +228,17 @@ public final class NativeDocumentView: NSView {
         // A new document has no reading position yet; the old one's would name a component in a
         // different book.
         readingAnchor = nil
+        // Sessions of blocks this build still has survive the re-render — the fresh cards
+        // adopt their consoles back. Another document's, and those of blocks whose ranges
+        // shifted when the file changed, close: their identity is gone.
+        runSessions.prune(
+            keeping: document.url,
+            validLocations: Set(built.components.compactMap { component in
+                guard case .code = component.content else { return nil }
+                return component.range.location
+            })
+        )
+        stackView.runContext = currentRunContext
         stackView.setComponents(built.components, metrics: metrics)
         applyMeasure()
         stackView.layoutSubtreeIfNeeded()
@@ -971,7 +1010,8 @@ extension NativeDocumentView: ComponentLinkPeekDelegate {
         else { return nil }
         let components = SectionPreviewBuilder.components(forOutlineIndex: heading, in: built)
         guard !components.isEmpty else { return nil }
-        return .section(SectionPreview(components: components, metrics: metrics),
+        return .section(SectionPreview(components: components, metrics: metrics,
+                                       runContext: runContext(for: document)),
                         title: document.outline[heading].title)
     }
 
@@ -980,8 +1020,22 @@ extension NativeDocumentView: ComponentLinkPeekDelegate {
     ) -> LinkPeekTarget? {
         let components = SectionPreviewBuilder.leadingComponents(in: built)
         guard !components.isEmpty else { return nil }
-        return .section(SectionPreview(components: components, metrics: metrics),
+        return .section(SectionPreview(components: components, metrics: metrics,
+                                       runContext: runContext(for: document)),
                         title: document.title)
+    }
+
+    /// The run context a peek of `document` gets. The current document shares the pane's own
+    /// store — a run in the card and a run on the page are the same run. Any other document
+    /// gets a throwaway store: its consoles live in the card, run at *its* project root, and
+    /// go away with the peek.
+    private func runContext(for document: MarkdownDocument) -> RunContext {
+        if let current = currentRunContext,
+           document.url.standardizedFileURL == current.documentURL {
+            return current
+        }
+        return RunContext(documentURL: document.url, rootURL: document.rootURL,
+                          store: RunSessionStore())
     }
 
     /// The parsed-and-built target of a relative link, cached by URL.

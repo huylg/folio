@@ -20,6 +20,12 @@ public final class DocumentStackView: NSView {
     private(set) var components: [DocumentComponent] = []
     private var metrics: DocumentMetrics
 
+    /// The document's run identity and session store, when its blocks share consoles across
+    /// surfaces. Set by owners that have a document (the reading pane; a peek card fed a
+    /// context by its producer) before `setComponents`; nil leaves every code card on its own
+    /// private store, which is the same machinery with one subscriber.
+    public var runContext: RunContext?
+
     /// The reading column's width. Components are laid out this wide and centred in the pane,
     /// which is what keeps one left edge for prose and cards alike.
     public var columnWidth: CGFloat = 0 {
@@ -81,6 +87,21 @@ public final class DocumentStackView: NSView {
             ?? live.first { $0.value === view }.map { componentOfPlacement[$0.key] }
         guard let index else { return }
         // The width the component was placed at — the span width if it took a page of its own.
+        let width = firstPlacement.indices.contains(index)
+            ? frames[firstPlacement[index]].width : contentWidth
+        let old = host?.sizeCache.cachedHeight(for: index, width: width)
+        host?.sizeCache.remove(id: index)
+        let new = height(of: components[index], index: index, width: width)
+        guard new != old else { return }
+        invalidateMeasurement()
+    }
+
+    /// The same re-measure, addressed by component index — for a session that appeared for a
+    /// block whose view has never been created, where there is no view to look up. Skips a
+    /// height-neutral report for the same reason its sibling does: a run finishing on a
+    /// console that already sits at its height cap changes nothing geometric.
+    public func remeasureComponent(at index: Int) {
+        guard components.indices.contains(index) else { return }
         let width = firstPlacement.indices.contains(index)
             ? frames[firstPlacement[index]].width : contentWidth
         let old = host?.sizeCache.cachedHeight(for: index, width: width)
@@ -672,10 +693,22 @@ public final class DocumentStackView: NSView {
             case .text(let attributed):
                 return TextComponentView.height(of: attributed, width: width)
             case .code(_, _, _, let lines):
-                // A retained card may carry a run-output panel the static measure knows
-                // nothing about.
-                let output = (self.retained[RetainKey(component: index, rows: nil)]
-                    as? CodeComponentView)?.outputPanelHeight(width: width) ?? 0
+                // A retained card may carry run consoles the static measure knows nothing
+                // about; with no view yet, the session store answers instead — a run started
+                // from a peek must reserve its space on a page the reader has never scrolled
+                // to, or scrolling there would land short and jump.
+                let output: CGFloat
+                if let card = self.retained[RetainKey(component: index, rows: nil)]
+                    as? CodeComponentView {
+                    output = card.outputPanelHeight(width: width)
+                } else if let context = self.runContext {
+                    output = context.store.consoleHeight(
+                        for: RunBlockKey(documentURL: context.documentURL,
+                                         location: component.range.location),
+                        width: width, metrics: metrics)
+                } else {
+                    output = 0
+                }
                 return CodeComponentView.height(lines: lines, width: width, metrics: metrics)
                     + output
             case .widget(let payload):
@@ -878,6 +911,15 @@ public final class DocumentStackView: NSView {
             let view = CodeComponentView(label: label, source: source, language: language,
                                          lines: lines, metrics: metrics, host: host)
             retained[key] = view
+            // Bound after retaining, so the adoption's height report finds the view. The
+            // component's range is its identity in the original document — a peek's slice
+            // keeps the original ranges, which is what makes both surfaces share consoles.
+            if let context = runContext {
+                view.bindRunSessions(
+                    key: RunBlockKey(documentURL: context.documentURL,
+                                     location: components[index].range.location),
+                    store: context.store)
+            }
             return view
 
         case .widget(.table(let spec)):

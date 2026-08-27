@@ -77,7 +77,9 @@ public final class DocumentViewController: NSViewController {
         guard let built = documentView?.built else { return nil }
         let components = SectionPreviewBuilder.components(forOutlineIndex: index, in: built)
         guard !components.isEmpty else { return nil }
-        return SectionPreview(components: components, metrics: metrics)
+        // The pane's own context: a run started in the card lands on the same block here.
+        return SectionPreview(components: components, metrics: metrics,
+                              runContext: documentView.currentRunContext)
     }
 
     /// Presentation mode. Unlike the CSS version, which scaled only the body size and left all
