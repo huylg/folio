@@ -54,6 +54,13 @@ final class RunOutputPanel: HeaderedCardView {
     init(session: RunSession, metrics: DocumentMetrics) {
         self.session = session
         super.init(metrics: metrics, label: Self.timeFormatter.string(from: session.startedAt))
+        // The owning card frames every console from its own `layout()`, so the frame must be
+        // the authority here — the same as the code body's. Left constraint-driven, the panel
+        // has no constraints of its own, so Auto Layout solves its header against the card's
+        // fallback intrinsic width instead of the width it is actually given: the trailing
+        // accessories land past the panel's right edge, where `masksToBounds` clips them, and
+        // the console loses its spinner and close button.
+        translatesAutoresizingMaskIntoConstraints = true
         wantsLayer = true
         layer?.masksToBounds = true
         alphaValue = 0

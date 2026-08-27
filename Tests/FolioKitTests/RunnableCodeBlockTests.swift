@@ -193,6 +193,41 @@ final class RunnableCodeBlockTests: XCTestCase {
                        "closing must restore the bare height")
     }
 
+    /// The console's header buttons must land inside the console.
+    ///
+    /// A panel left constraint-driven has no constraints of its own, so Auto Layout solves its
+    /// header against the card's fallback intrinsic width rather than the width the card
+    /// actually frames it at — the trailing accessories end up past the panel's right edge,
+    /// where its layer mask clips them, and the console loses its spinner and close button.
+    /// Reproduced through a window, because that is what runs the constraint pass.
+    func testConsoleHeaderButtonsStayInsideTheConsole() throws {
+        let width: CGFloat = 520
+        let host = RecordingHost()
+        let card = CodeComponentView(label: "bash", source: "echo hi", language: "bash",
+                                     lines: lines("echo hi"), metrics: metrics, host: host)
+        click(try XCTUnwrap(card.runButton))
+        host.emitOutput("tick 1\ntick 2\n")
+
+        let height = card.sizeThatFits(width: width).height
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        window.contentView = content
+        content.addSubview(card)
+        card.frame = NSRect(x: 0, y: 0, width: width, height: height)
+        content.layoutSubtreeIfNeeded()
+
+        let panel = try XCTUnwrap(card.runPanels.first)
+        let accessories = panel.headerAccessories.frame
+        XCTAssertGreaterThan(accessories.width, 0,
+                             "a running console has a spinner and a close button")
+        XCTAssertLessThanOrEqual(accessories.maxX, panel.bounds.width,
+                                 "the close button must not sit past the console's edge")
+        XCTAssertGreaterThanOrEqual(accessories.minX, 0)
+        XCTAssertLessThanOrEqual(accessories.maxY, CardChrome.headerHeight,
+                                 "the accessories belong on the header strip")
+    }
+
     func testLongOutputIsCappedNotUnbounded() {
         let host = RecordingHost()
         let card = CodeComponentView(label: "bash", source: "yes", language: "bash",
