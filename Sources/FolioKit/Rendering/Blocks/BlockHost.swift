@@ -9,12 +9,13 @@ public protocol BlockHost: AnyObject {
     func blockRequestsOpen(_ destination: String)
     func blockRequestsCopy(_ text: String)
     /// Runs a shell block's source on a pty at the document's project root. `onOutput` fires
-    /// on the main queue as output arrives, each time with the full transcript so far, so the
-    /// console shows the command live. `completion` fires on the main queue once the command
-    /// exits, carrying its result so the card can log it inline — or nil from a host that does
-    /// not execute (a peek card, a card with no document).
+    /// on the main queue as output arrives, each time with the full transcript so far — parsed,
+    /// so the console shows the command live *and* in the colors it asked for. `completion`
+    /// fires on the main queue once the command exits, carrying its result so the card can log
+    /// it inline — or nil from a host that does not execute (a peek card, a card with no
+    /// document).
     func blockRequestsRun(_ command: String,
-                          onOutput: @escaping (String) -> Void,
+                          onOutput: @escaping (TerminalSnapshot) -> Void,
                           completion: @escaping (ProcessRunner.Output?) -> Void)
     /// A block's intrinsic height changed after it was placed — a run's output panel appeared
     /// or was dismissed — so the host must re-measure that component and reflow the page.

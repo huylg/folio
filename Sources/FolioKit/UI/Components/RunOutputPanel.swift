@@ -22,7 +22,7 @@ final class RunOutputPanel: HeaderedCardView {
     var entry: RunSession.Entry? { session.entry }
     var isRunning: Bool { session.isRunning }
     /// What the pty has produced so far — the live body until the command exits.
-    var liveTranscript: String { session.liveTranscript }
+    var liveTranscript: TerminalSnapshot { session.liveTranscript }
 
     /// Re-measure hook: the owning card forwards this to its host on every animation step.
     var onHeightChange: (() -> Void)?
@@ -214,33 +214,150 @@ final class RunOutputPanel: HeaderedCardView {
         return liveText(session.liveTranscript, metrics: metrics)
     }
 
-    /// The result as attributed text: stdout in body ink, stderr and a non-zero exit in red,
-    /// and an explicit "(no output)" so a silent success never looks like a dead button.
-    /// Static so the height measure and the rendered panel read the same string.
+    // MARK: Console type
+
+    /// The point size console output is set at.
+    ///
+    /// The same size as the code in the card above it, rather than the caption size the chrome
+    /// uses. A console is not chrome: it is output a reader reads line by line, often the
+    /// longest stretch of text on the page, and setting it a tier below the code that produced
+    /// it made the answer smaller than the question. It tracks the reading size through the
+    /// ramp, so ⌘+ grows it with everything else.
+    static func pointSize(metrics: DocumentMetrics) -> CGFloat {
+        metrics.ramp.mono().pointSize
+    }
+
+    /// Extra leading between console rows, as a fraction of the type size.
+    ///
+    /// Mono faces set solid are hard to scan: a terminal log is mostly short lines with a lot
+    /// of punctuation, and without a gap the eye loses its row on the way back to the left
+    /// margin. This is roughly the quarter-em terminals themselves use.
+    static let lineSpacingRatio: CGFloat = 0.26
+
+    /// The paragraph style every console row carries. Shared by the styled runs and the plain
+    /// ones — a row missing it would sit tighter than its neighbours.
+    static func paragraphStyle(size: CGFloat) -> NSParagraphStyle {
+        let style = NSMutableParagraphStyle()
+        style.lineSpacing = (size * lineSpacingRatio).rounded()
+        // Console lines never wrap; they scroll sideways, which the panel sizes for.
+        style.lineBreakMode = .byClipping
+        return style
+    }
+
+    /// The result as attributed text: the transcript in the colors the command asked for,
+    /// stderr and a non-zero exit in red, and an explicit "(no output)" so a silent success
+    /// never looks like a dead button. Static so the height measure and the rendered panel
+    /// read the same string.
     static func outputText(_ result: ProcessRunner.Output,
                            metrics: DocumentMetrics) -> NSAttributedString {
-        let font = TypeRamp.fixedPitchMono(ofSize: metrics.ramp.caption().pointSize)
+        let size = pointSize(metrics: metrics)
+        let font = TypeRamp.fixedPitchMono(ofSize: size)
+        let paragraph = paragraphStyle(size: size)
         let out = NSMutableAttributedString()
+        func separator() {
+            guard out.length > 0 else { return }
+            out.append(NSAttributedString(string: "\n", attributes: [.font: font,
+                                                                    .paragraphStyle: paragraph]))
+        }
         func line(_ text: String, _ color: NSColor) {
-            if out.length > 0 {
-                out.append(NSAttributedString(string: "\n", attributes: [.font: font]))
-            }
+            separator()
             out.append(NSAttributedString(string: text,
-                                          attributes: [.font: font, .foregroundColor: color]))
+                                          attributes: [.font: font, .foregroundColor: color,
+                                                       .paragraphStyle: paragraph]))
         }
         if result.status != 0 { line("exit \(result.status)", .systemRed) }
-        if !result.outputText.isEmpty { line(result.outputText, Ink.body) }
+        if !result.transcript.isEmpty {
+            separator()
+            out.append(liveText(result.transcript, metrics: metrics))
+        } else if !result.outputText.isEmpty {
+            // No parser behind this one — the non-pty paths, and hosts that fabricate a
+            // result. Plain body ink, as it always was.
+            line(result.outputText, Ink.body)
+        }
         if !result.errorText.isEmpty { line(result.errorText, .systemRed) }
         if out.length == 0 { line("(no output)", Ink.tertiary) }
         return out
     }
 
-    /// Live pty text, before any exit dressing — plain body ink, same mono face as the log.
-    static func liveText(_ transcript: String, metrics: DocumentMetrics) -> NSAttributedString {
-        NSAttributedString(string: transcript, attributes: [
-            .font: TypeRamp.fixedPitchMono(ofSize: metrics.ramp.caption().pointSize),
-            .foregroundColor: Ink.body,
-        ])
+    /// A transcript as attributed text, one run at a time — the same mono face throughout,
+    /// with each run's own colors, weight, and decoration.
+    static func liveText(_ transcript: TerminalSnapshot,
+                         metrics: DocumentMetrics) -> NSAttributedString {
+        let size = pointSize(metrics: metrics)
+        let out = NSMutableAttributedString()
+        for (index, line) in transcript.lines.enumerated() {
+            if index > 0 {
+                // The newline carries plain attributes: a line ending inside a background
+                // color would otherwise paint that color out to the edge of the console.
+                out.append(NSAttributedString(string: "\n",
+                                              attributes: attributes(for: .plain, size: size)))
+            }
+            for run in line.runs where !run.text.isEmpty {
+                out.append(NSAttributedString(string: run.text,
+                                              attributes: attributes(for: run.style, size: size)))
+            }
+        }
+        return out
+    }
+
+    /// One run's style as text attributes.
+    static func attributes(for style: TerminalCellStyle,
+                           size: CGFloat) -> [NSAttributedString.Key: Any] {
+        let (foreground, background) = colors(for: style)
+        var attributes: [NSAttributedString.Key: Any] = [
+            .font: TypeRamp.fixedPitchMono(ofSize: size, bold: style.bold, italic: style.italic),
+            .foregroundColor: foreground,
+            .paragraphStyle: paragraphStyle(size: size),
+        ]
+        if let background { attributes[.backgroundColor] = background }
+        if style.underline {
+            attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
+            if let color = concrete(style.underlineColor) {
+                attributes[.underlineColor] = color
+            }
+        }
+        if style.strikethrough {
+            attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+        }
+        return attributes
+    }
+
+    /// A style's two painted colors. The background is nil when nothing asked for one, so an
+    /// ordinary run leaves the card's own fill showing through rather than painting over it.
+    ///
+    /// The order matters. `inverse` swaps the pair *after* the defaults have been resolved to
+    /// real colors: swapping first would hand the text `.default` as its color and leave the
+    /// background unpainted, which draws the text in the color it is sitting on — a hole where
+    /// the reversed word should be. `faint` then blends toward whatever the text ended up
+    /// sitting on, which for reversed text is the color that was just swapped in.
+    static func colors(for style: TerminalCellStyle) -> (foreground: NSColor,
+                                                         background: NSColor?) {
+        let askedForeground = concrete(style.foreground) ?? Ink.body
+        let askedBackground = concrete(style.background)
+
+        var foreground = askedForeground
+        var background = askedBackground
+        if style.inverse {
+            foreground = askedBackground ?? Ink.codeBackground
+            background = askedForeground
+        }
+        if style.faint {
+            let backdrop = background ?? Ink.codeBackground
+            foreground = foreground.blending(0.45, toward: backdrop) ?? foreground
+        }
+        return (foreground, background)
+    }
+
+    /// A terminal color as a concrete one — nil for `.default`, which only the caller knows
+    /// how to fill in.
+    private static func concrete(_ color: TerminalColor) -> NSColor? {
+        switch color {
+        case .default: return nil
+        case .palette(let index): return Ink.terminal(index)
+        case .rgb(let red, let green, let blue):
+            return NSColor(srgbRed: CGFloat(red) / 255, green: CGFloat(green) / 255,
+                           blue: CGFloat(blue) / 255, alpha: 1)
+        }
     }
 
     /// Console lines never wrap, so heights are measured at effectively infinite width — a
@@ -257,13 +374,22 @@ final class RunOutputPanel: HeaderedCardView {
     /// call would hand back the per-pass cost the console caches everything else to avoid.
     private static var lineHeights: [CGFloat: CGFloat] = [:]
 
+    /// Measured as the *advance* from one row to the next — the difference between a two-row
+    /// transcript and a one-row one — not as the height of a single row. The two stopped being
+    /// the same when console rows gained their extra leading, and the cap below rounds the
+    /// viewport down to whole rows by dividing by this: measured without the leading it would
+    /// round to a viewport that is a row-and-a-bit too tall, which is exactly the half-clipped
+    /// last line the rounding exists to prevent.
     static func lineHeight(metrics: DocumentMetrics) -> CGFloat {
-        let size = metrics.ramp.caption().pointSize
+        let size = pointSize(metrics: metrics)
         if let cached = lineHeights[size] { return cached }
-        let height = max(1, TextComponentView.height(of: liveText("x", metrics: metrics),
-                                                     width: 1000))
-        lineHeights[size] = height
-        return height
+        func height(_ text: String) -> CGFloat {
+            TextComponentView.height(of: liveText(.plainText(text), metrics: metrics),
+                                     width: 1000)
+        }
+        let advance = max(1, height("x\nx") - height("x"))
+        lineHeights[size] = advance
+        return advance
     }
 
     func fullHeight(width: CGFloat) -> CGFloat {

@@ -119,11 +119,31 @@ public struct TypeRamp: Equatable {
     /// `monospacedSystemFont` is not actually fixed-pitch for box-drawing, CJK, or emoji
     /// glyphs — Apple's own note says to apply `fixedAdvance` to guarantee it. Code blocks
     /// and YAML frontmatter in raw mode both depend on columns lining up.
-    static func fixedPitchMono(ofSize size: CGFloat) -> NSFont {
-        let base = NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
-        let advance = ("0" as NSString).size(withAttributes: [.font: base]).width
-        let descriptor = base.fontDescriptor.addingAttributes([.fixedAdvance: advance])
-        return NSFont(descriptor: descriptor, size: size) ?? base
+    ///
+    /// The bold and italic faces exist for console output, where SGR asks for them mid-line.
+    /// Whichever face is asked for, the advance is measured on the **regular** one: bold
+    /// glyphs are wider, and a bold word measured against its own face would shift every
+    /// column after it — a colored `make` log is full of aligned bold headings, and they have
+    /// to stay aligned with the plain rows around them.
+    static func fixedPitchMono(ofSize size: CGFloat,
+                               bold: Bool = false, italic: Bool = false) -> NSFont {
+        let regular = NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        let advance = ("0" as NSString).size(withAttributes: [.font: regular]).width
+
+        var descriptor = NSFont.monospacedSystemFont(ofSize: size,
+                                                     weight: bold ? .bold : .regular)
+            .fontDescriptor
+        if italic {
+            // The monospaced system font ships no italic face, so this asks Core Text to
+            // synthesize the slant. Falls back to the upright face if it cannot.
+            descriptor = descriptor.withSymbolicTraits(
+                descriptor.symbolicTraits.union(.italic))
+        }
+        descriptor = descriptor.addingAttributes([.fixedAdvance: advance])
+        return NSFont(descriptor: descriptor, size: size)
+            ?? NSFont(descriptor: regular.fontDescriptor
+                        .addingAttributes([.fixedAdvance: advance]), size: size)
+            ?? regular
     }
 }
 

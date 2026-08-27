@@ -558,7 +558,7 @@ private final class PreviewBlockHost: BlockHost {
     }
 
     func blockRequestsRun(_ command: String,
-                          onOutput: @escaping (String) -> Void,
+                          onOutput: @escaping (TerminalSnapshot) -> Void,
                           completion: @escaping (ProcessRunner.Output?) -> Void) {
         guard let runContext else {
             completion(nil)

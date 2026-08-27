@@ -43,7 +43,7 @@ public final class RunSession {
     public let startedAt: Date
     /// What the pty has produced so far — the live body until the command exits, and still
     /// readable after, since the result's text is derived from the same stream.
-    public private(set) var liveTranscript = ""
+    public private(set) var liveTranscript: TerminalSnapshot = .empty
     /// The finished run — nil while the command is still running.
     public private(set) var entry: Entry?
     public private(set) var isClosed = false
@@ -70,7 +70,7 @@ public final class RunSession {
 
     /// A fresh slice of the pty stream: the full transcript so far, replace not append.
     /// Ignored once finished or closed — a dismissed console discards its late output.
-    public func appendOutput(_ transcript: String) {
+    public func appendOutput(_ transcript: TerminalSnapshot) {
         guard isRunning else { return }
         liveTranscript = transcript
         notify(.output)

@@ -19,7 +19,7 @@ final class RecordingHost: BlockHost {
     /// Held instead of called, so a test can drive the "still running" state explicitly.
     private(set) var pendingRunCompletions: [(ProcessRunner.Output?) -> Void] = []
     /// The live-output channels of runs still pending, so a test can stream into them.
-    private(set) var pendingRunOutputs: [(String) -> Void] = []
+    private(set) var pendingRunOutputs: [(TerminalSnapshot) -> Void] = []
 
     init(metrics: DocumentMetrics = testMetrics) {
         self.blockMetrics = metrics
@@ -28,7 +28,7 @@ final class RecordingHost: BlockHost {
     func blockRequestsOpen(_ destination: String) { opened.append(destination) }
     func blockRequestsCopy(_ text: String) { copied.append(text) }
     func blockRequestsRun(_ command: String,
-                          onOutput: @escaping (String) -> Void,
+                          onOutput: @escaping (TerminalSnapshot) -> Void,
                           completion: @escaping (ProcessRunner.Output?) -> Void) {
         ran.append(command)
         pendingRunOutputs.append(onOutput)
@@ -37,9 +37,13 @@ final class RecordingHost: BlockHost {
     func blockHeightDidChange(_ view: NSView) { heightChanges.append(view) }
 
     /// Streams a transcript-so-far into every pending run, as the pty would.
-    func emitOutput(_ transcript: String) {
+    func emitOutput(_ transcript: TerminalSnapshot) {
         pendingRunOutputs.forEach { $0(transcript) }
     }
+
+    /// The same, for the many tests that only care about the text — most of what a console
+    /// does has nothing to do with what color the text arrived in.
+    func emitOutput(_ transcript: String) { emitOutput(.plainText(transcript)) }
 
     func finishPendingRuns(with result: ProcessRunner.Output? = nil) {
         let completions = pendingRunCompletions

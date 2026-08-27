@@ -74,8 +74,8 @@ final class RunSessionMirroringTests: XCTestCase {
         let empty = b.runPanels[0].fullHeight(width: width)
         hostA.emitOutput("hello\nworld\n")
 
-        XCTAssertEqual(a.runPanels[0].liveTranscript, "hello\nworld\n")
-        XCTAssertEqual(b.runPanels[0].liveTranscript, "hello\nworld\n",
+        XCTAssertEqual(a.runPanels[0].liveTranscript.plainText, "hello\nworld\n")
+        XCTAssertEqual(b.runPanels[0].liveTranscript.plainText, "hello\nworld\n",
                        "live output must reach the view that did not start the run")
         XCTAssertEqual(a.runPanels[0].fullHeight(width: width),
                        b.runPanels[0].fullHeight(width: width),
