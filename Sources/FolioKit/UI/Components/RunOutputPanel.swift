@@ -122,6 +122,7 @@ final class RunOutputPanel: HeaderedCardView {
         // Decided before the text changes: "was the reader at the tail" only means anything
         // against the old content.
         pinTailAfterLayout = isScrolledToTail
+        invalidateBodyCache()
         textView.configure(with: Self.liveText(session.liveTranscript, metrics: metrics),
                            kind: .paragraph)
         needsLayout = true
@@ -158,6 +159,7 @@ final class RunOutputPanel: HeaderedCardView {
             bodyText: Self.liveText(session.liveTranscript, metrics: metrics),
             width: width, metrics: metrics)
 
+        invalidateBodyCache()
         spinner.stopAnimation(nil)
         spinner.removeFromSuperview()
         textView.configure(with: Self.outputText(entry.output, metrics: metrics),
@@ -178,7 +180,32 @@ final class RunOutputPanel: HeaderedCardView {
     }
 
     /// The current body text: the logged result once finished, the raw pty transcript before.
-    private var bodyText: NSAttributedString { Self.bodyText(for: session, metrics: metrics) }
+    ///
+    /// Cached, with its measured size, until the transcript or the result changes: both are
+    /// read on every measure, layout, and draw pass — several times each — and rebuilding and
+    /// re-laying-out a whole transcript per scroll frame is what made pages with consoles slow.
+    private var cachedBodyText: NSAttributedString?
+    private var cachedContentSize: NSSize?
+
+    private func invalidateBodyCache() {
+        cachedBodyText = nil
+        cachedContentSize = nil
+    }
+
+    private var bodyText: NSAttributedString {
+        if let cachedBodyText { return cachedBodyText }
+        let text = Self.bodyText(for: session, metrics: metrics)
+        cachedBodyText = text
+        return text
+    }
+
+    /// The transcript's laid-out size at the unwrapped measure width.
+    private var contentSize: NSSize {
+        if let cachedContentSize { return cachedContentSize }
+        let size = TextMeasurer.shared.size(of: bodyText, width: Self.unwrappedMeasureWidth)
+        cachedContentSize = size
+        return size
+    }
 
     /// The session's body as attributed text — the logged result once finished, the live
     /// transcript before. Static so a store can measure a console no view exists for.
@@ -222,12 +249,25 @@ final class RunOutputPanel: HeaderedCardView {
 
     /// One line of console output at these metrics. The single formula both the panel and the
     /// view-less measure use — two answers here and the page jumps when a view is created.
+    ///
+    /// Memoized by the only thing it depends on, the mono face's size: it is read from the
+    /// capped-height path, which every measure, layout, and draw pass of a console taller than
+    /// the cap goes through. It used to be a per-panel `lazy var`; sharing the formula with the
+    /// store's view-less measure is what made it static, and a static that re-ran TextKit per
+    /// call would hand back the per-pass cost the console caches everything else to avoid.
+    private static var lineHeights: [CGFloat: CGFloat] = [:]
+
     static func lineHeight(metrics: DocumentMetrics) -> CGFloat {
-        max(1, TextComponentView.height(of: liveText("x", metrics: metrics), width: 1000))
+        let size = metrics.ramp.caption().pointSize
+        if let cached = lineHeights[size] { return cached }
+        let height = max(1, TextComponentView.height(of: liveText("x", metrics: metrics),
+                                                     width: 1000))
+        lineHeights[size] = height
+        return height
     }
 
     func fullHeight(width: CGFloat) -> CGFloat {
-        Self.settledHeight(bodyText: bodyText, width: width, metrics: metrics)
+        Self.settledHeight(contentSize: contentSize, width: width, metrics: metrics)
     }
 
     /// A console's full (settled, reveal = 1) height for `bodyText` at `width`. Static so a
@@ -235,10 +275,19 @@ final class RunOutputPanel: HeaderedCardView {
     /// been created.
     static func settledHeight(bodyText: NSAttributedString, width: CGFloat,
                               metrics: DocumentMetrics) -> CGFloat {
+        settledHeight(contentSize: TextMeasurer.shared.size(of: bodyText,
+                                                            width: unwrappedMeasureWidth),
+                      width: width, metrics: metrics)
+    }
+
+    /// The same, for a caller that already has the transcript's laid-out size — the panel
+    /// itself, which caches it rather than re-running TextKit on every pass.
+    static func settledHeight(contentSize: NSSize, width: CGFloat,
+                              metrics: DocumentMetrics) -> CGFloat {
         let insets = metrics.codeCardInsets
-        let content = TextMeasurer.shared.size(of: bodyText, width: unwrappedMeasureWidth)
         return CardChrome.headerHeight + insets.bodyTop
-            + scrollViewportHeight(forContent: content, panelWidth: width, metrics: metrics)
+            + scrollViewportHeight(forContent: contentSize, panelWidth: width,
+                                   metrics: metrics)
             + insets.bodyBottom
     }
 
@@ -287,7 +336,7 @@ final class RunOutputPanel: HeaderedCardView {
         let width = max(1, bounds.width)
 
         let viewportWidth = Self.textWidth(panelWidth: width, metrics: metrics)
-        let content = TextMeasurer.shared.size(of: bodyText, width: Self.unwrappedMeasureWidth)
+        let content = contentSize
         // The document is as wide as its widest line; a narrower transcript still fills the
         // viewport so selection and clicks behave across its whole width.
         textView.frame = NSRect(x: 0, y: 0,

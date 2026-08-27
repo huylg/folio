@@ -396,6 +396,126 @@ final class RunnableCodeBlockTests: XCTestCase {
                                         + "not only when the result arrives")
     }
 
+    // MARK: What a console costs the page
+
+    /// A settled console is measured once, not once per pass. Its transcript and the code text
+    /// are read by every measure, layout, and draw the card takes while scrolling, and
+    /// re-running TextKit on each of them is what made pages with consoles crawl.
+    func testASettledConsoleDoesNotRemeasureItsTranscriptPerPass() throws {
+        let width: CGFloat = 500
+        let host = RecordingHost()
+        let card = CodeComponentView(label: "bash", source: "make test", language: "bash",
+                                     lines: lines("make test"), metrics: metrics, host: host)
+        card.showRunOutput(ProcessRunner.Output(
+            status: 0, outputText: (1...50).map { "line \($0)" }.joined(separator: "\n"),
+            errorText: ""))
+        card.frame = NSRect(x: 0, y: 0, width: width,
+                            height: card.sizeThatFits(width: width).height)
+        card.layoutSubtreeIfNeeded()
+        _ = card.cardRect  // Warm every cache the passes below read.
+
+        let before = TextMeasurer.shared.measures
+        _ = card.sizeThatFits(width: width)
+        _ = card.outputPanelHeight(width: width)
+        _ = card.cardRect
+        card.needsLayout = true
+        card.layoutSubtreeIfNeeded()
+        XCTAssertEqual(TextMeasurer.shared.measures, before,
+                       "a settled console must serve measure, layout, and draw from cache")
+    }
+
+    /// A live output tick that leaves the console at the same height — every tick once it hits
+    /// its cap — must not reflow the page. Reflowing detaches and reconfigures every visible
+    /// view, and a chatty command reports twenty times a second for its whole run.
+    func testAHeightNeutralRemeasureDoesNotReflowThePage() throws {
+        let document = try makeDocument("""
+        # T
+
+        Some prose above the block.
+
+        ```bash
+        make test
+        ```
+
+        And some prose below it.
+        """)
+        let built = AttributedDocumentBuilder(document: document, metrics: metrics).build()
+        let host = RecordingHost(metrics: metrics)
+        let stack = DocumentStackView(metrics: metrics)
+        stack.host = host
+        stack.setComponents(built.components, metrics: metrics)
+        stack.frame = NSRect(x: 0, y: 0, width: 600, height: 0)
+        stack.columnWidth = 600
+        stack.layoutSubtreeIfNeeded()
+
+        let card = try XCTUnwrap(
+            stack.subviews.compactMap { $0 as? CodeComponentView }.first)
+        let button = try XCTUnwrap(card.runButton)
+        click(button)
+        // Past the cap: from here on, more output cannot change the console's height.
+        host.emitOutput((1...200).map { "line \($0)" }.joined(separator: "\n"))
+        stack.remeasureComponent(containing: card)
+        XCTAssertTrue(stack.needsLayout, "the console appearing must reflow the page")
+        stack.layoutSubtreeIfNeeded()
+
+        host.emitOutput((1...220).map { "line \($0)" }.joined(separator: "\n"))
+        stack.remeasureComponent(containing: card)
+        XCTAssertFalse(stack.needsLayout,
+                       "a capped console's output tick changes no geometry and must not "
+                           + "reflow the page")
+
+        // Closing the console is a real height change again.
+        click(try XCTUnwrap(card.runPanels.first).closeButton)
+        stack.remeasureComponent(containing: card)
+        XCTAssertTrue(stack.needsLayout, "the console folding away must reflow the page")
+    }
+
+    /// A reflow moves the views around the console; it must not rebuild them. Retiring and
+    /// reconfiguring every visible view — a full TextKit relayout of each — on every animation
+    /// frame of an unfold is what kept scrolling janky around a run.
+    func testAReflowMovesVisibleProseWithoutReconfiguringIt() throws {
+        let document = try makeDocument("""
+        # T
+
+        First paragraph above the block.
+
+        ```bash
+        make test
+        ```
+
+        A paragraph below, which a growing console pushes down.
+
+        And another one after it.
+        """)
+        let built = AttributedDocumentBuilder(document: document, metrics: metrics).build()
+        let host = RecordingHost(metrics: metrics)
+        let stack = DocumentStackView(metrics: metrics)
+        stack.host = host
+        stack.setComponents(built.components, metrics: metrics)
+        stack.frame = NSRect(x: 0, y: 0, width: 600, height: 0)
+        stack.columnWidth = 600
+        stack.layoutSubtreeIfNeeded()
+
+        let card = try XCTUnwrap(
+            stack.subviews.compactMap { $0 as? CodeComponentView }.first)
+        let proseBefore = stack.subviews.compactMap { $0 as? TextComponentView }
+        XCTAssertGreaterThan(proseBefore.count, 1, "fixture needs prose around the block")
+
+        click(try XCTUnwrap(card.runButton))
+        host.emitOutput("hello\nworld")
+        let configures = TextComponentView.configureCount
+        stack.remeasureComponent(containing: card)
+        stack.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(TextComponentView.configureCount, configures,
+                       "a reflow must reclaim the visible prose as it is, not rebuild it")
+        let proseAfter = Set(stack.subviews.compactMap { $0 as? TextComponentView })
+        for view in proseBefore {
+            XCTAssertTrue(proseAfter.contains(view),
+                          "the same view instances must survive the reflow")
+        }
+    }
+
     func testFailureOutputNamesTheExitStatus() {
         let text = RunOutputPanel.outputText(
             ProcessRunner.Output(status: 3, outputText: "out", errorText: "err"),
