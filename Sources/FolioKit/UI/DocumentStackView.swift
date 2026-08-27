@@ -70,11 +70,23 @@ public final class DocumentStackView: NSView {
     /// Re-measures the component whose view this is and reflows the page — the path a code
     /// card takes when its run-output panel appears or is dismissed, changing its height after
     /// placement. Its cached height is dropped; everything else re-reads its cache entry.
+    ///
+    /// A report that turns out to be height-neutral reflows nothing. A console streaming a
+    /// chatty command reports on every output tick, and once it hits its height cap the ticks
+    /// stop meaning anything geometric — reflowing the page for each of them (detaching and
+    /// reconfiguring every visible view, twenty times a second, for the length of the run) is
+    /// what made scrolling crawl.
     public func remeasureComponent(containing view: NSView) {
         let index = retained.first { $0.value === view }?.key.component
             ?? live.first { $0.value === view }.map { componentOfPlacement[$0.key] }
         guard let index else { return }
+        // The width the component was placed at — the span width if it took a page of its own.
+        let width = firstPlacement.indices.contains(index)
+            ? frames[firstPlacement[index]].width : contentWidth
+        let old = host?.sizeCache.cachedHeight(for: index, width: width)
         host?.sizeCache.remove(id: index)
+        let new = height(of: components[index], index: index, width: width)
+        guard new != old else { return }
         invalidateMeasurement()
     }
 
@@ -163,6 +175,13 @@ public final class DocumentStackView: NSView {
     /// Views kept even when scrolled away: a card that decoded an image or rendered a diagram
     /// should not do it again, and a code card holds the copy button's transient state.
     private var retained: [RetainKey: NSView] = [:]
+    /// Views a reflow detached from their placements but not from the hierarchy, keyed by what
+    /// they show. A reflow rebuilds every placement index, but the content behind them is
+    /// unchanged — only positions move — so the repopulate right after takes these back as
+    /// they are. Retiring and reconfiguring every visible view instead meant a console's
+    /// unfold, reflowing on every animation frame, re-ran TextKit on the whole viewport sixty
+    /// times a second.
+    private var parked: [RetainKey: NSView] = [:]
     /// Prose views are the many, and are cheap to reconfigure, so they recycle.
     private var textPool: [TextComponentView] = []
     private static let textPoolLimit = 64
@@ -195,6 +214,7 @@ public final class DocumentStackView: NSView {
     public func setComponents(_ components: [DocumentComponent], metrics: DocumentMetrics) {
         self.components = components
         self.metrics = metrics
+        spacingCache = Array(repeating: nil, count: components.count)
         recycleEverything()
         resetPlacements()
         spreadTops = []
@@ -204,27 +224,39 @@ public final class DocumentStackView: NSView {
 
     public func updateMetrics(_ metrics: DocumentMetrics) {
         self.metrics = metrics
+        spacingCache = Array(repeating: nil, count: components.count)
         recycleEverything()
         invalidateMeasurement()
     }
 
     private func recycleEverything() {
         for (_, view) in live { retire(view) }
+        for (_, view) in parked { retire(view) }
         live = [:]
+        parked = [:]
         retained = [:]
     }
 
-    /// Detaches every live view and drops any retained view whose content no longer exists.
-    ///
-    /// Called when pagination changes: `live` is keyed by placement, and those indices have just
-    /// been rebuilt, so every one of them has to be re-derived from the new layout.
-    private func releasePlacementViews() {
-        // Through `retire`, so prose views go back to the pool rather than being reallocated on
-        // every reflow.
-        for (_, view) in live { retire(view) }
+    /// Moves every live view to `parked`, keyed by what it shows, before the placement indices
+    /// are rebuilt. The views stay in the hierarchy; the repopulate reclaims them under their
+    /// new placement, and retires whatever it does not claim. Must run against the *old*
+    /// placement arrays — the keys come from them.
+    private func parkLiveViews() {
+        for (placement, view) in live {
+            let key = retainKey(for: placement)
+            if parked[key] == nil { parked[key] = view } else { retire(view) }
+        }
         live = [:]
+    }
+
+    /// Drops any retained or parked view whose content no longer exists in the new layout.
+    private func releasePlacementViews() {
         let keys = Set(frames.indices.map { retainKey(for: $0) })
         retained = retained.filter { keys.contains($0.key) }
+        for (key, view) in parked where !keys.contains(key) {
+            retire(view)
+            parked.removeValue(forKey: key)
+        }
     }
 
     private func retainKey(for placement: Int) -> RetainKey {
@@ -250,6 +282,7 @@ public final class DocumentStackView: NSView {
         else { return }
         measuredWidth = width
 
+        parkLiveViews()
         resetPlacements()
         spreadTops = [contentInsets.top]
         spreadHeights = []
@@ -314,7 +347,7 @@ public final class DocumentStackView: NSView {
         /// Places one component, flowing, splitting or spanning as it must.
         func placeComponent(_ index: Int) {
             let component = components[index]
-            let spacing = self.spacing(for: component)
+            let spacing = self.spacing(at: index)
             let height = self.height(of: component, index: index, width: width)
 
             // Anything that fits a column flows normally: into the room that is left, or into
@@ -422,10 +455,15 @@ public final class DocumentStackView: NSView {
         // table and spanning rules above take over.
         for (number, range) in sectionRanges().enumerated() {
             section = number
-            let height = sectionHeight(range, width: width)
-            let before = spacing(for: components[range.lowerBound]).before
-            if columns > 1, height <= target, height > room(after: before), used[column] > 0 {
-                advance()
+            // A single column has no column breaks to place sections around, and the section
+            // height is a walk over every component in it — a whole second pass over the
+            // document that a reflow firing per animation frame cannot afford.
+            if columns > 1 {
+                let height = sectionHeight(range, width: width)
+                let before = spacing(at: range.lowerBound).before
+                if height <= target, height > room(after: before), used[column] > 0 {
+                    advance()
+                }
             }
             for index in range { placeComponent(index) }
         }
@@ -502,7 +540,7 @@ public final class DocumentStackView: NSView {
     private func sectionHeight(_ range: Range<Int>, width: CGFloat) -> CGFloat {
         var total: CGFloat = 0
         for index in range {
-            let spacing = self.spacing(for: components[index])
+            let spacing = self.spacing(at: index)
             total += spacing.before + self.height(of: components[index], index: index, width: width)
             if index != range.upperBound - 1 { total += spacing.after }
         }
@@ -589,6 +627,22 @@ public final class DocumentStackView: NSView {
         let total = contentHeight + trailingParkingSpace
         guard frame.height != total else { return }
         setFrameSize(NSSize(width: frame.width, height: total))
+    }
+
+    /// The gap above and below each component, memoized: the values only change with the
+    /// document or the metrics, but every reflow walks all of them — and a console's unfold
+    /// reflows on every animation frame, where re-reading paragraph styles off every attributed
+    /// string was most of the walk.
+    private var spacingCache: [(before: CGFloat, after: CGFloat)?] = []
+
+    private func spacing(at index: Int) -> (before: CGFloat, after: CGFloat) {
+        if spacingCache.count != components.count {
+            spacingCache = Array(repeating: nil, count: components.count)
+        }
+        if let cached = spacingCache[index] { return cached }
+        let value = spacing(for: components[index])
+        spacingCache[index] = value
+        return value
     }
 
     /// The gap above and below a component.
@@ -782,6 +836,10 @@ public final class DocumentStackView: NSView {
             retire(view)
             live.removeValue(forKey: placement)
         }
+
+        // Whatever a reflow parked and this pass did not reclaim is out of the viewport now.
+        for (_, view) in parked { retire(view) }
+        parked = [:]
     }
 
     private func install(_ placement: Int) -> NSView {
@@ -789,14 +847,19 @@ public final class DocumentStackView: NSView {
         view.frame = frame(ofPlacement: placement)
         (view as? DimmableComponent)?.isDimmed =
             focusedComponent != nil && focusedComponent != componentOfPlacement[placement]
-        addSubview(view)
+        // A reclaimed parked view never left the hierarchy; re-adding it would only churn.
+        if view.superview !== self { addSubview(view) }
         live[placement] = view
         return view
     }
 
     private func makeView(for placement: Int) -> NSView {
         let key = retainKey(for: placement)
+        // Claimed either way: a retained view that was live sits in `parked` too, and leaving
+        // it there would hand it to the retire sweep at the end of the pass.
+        let parkedView = parked.removeValue(forKey: key)
         if let kept = retained[key] { return kept }
+        if let parkedView { return parkedView }
         let index = key.component
 
         switch components[index].content {
