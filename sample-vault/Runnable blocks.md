@@ -28,7 +28,7 @@ echo "markdown files in this repo:"
 find sample-vault -name '*.md' | sort
 ```
 
-Exit status is reported, and stderr is shown separately:
+Exit status is reported. Both streams arrive together, interleaved where the command wrote them — a terminal has one stream, and this is a real one:
 
 ```bash
 echo "this went to stdout"
@@ -41,6 +41,34 @@ Git commands run against the repo this file lives in:
 ```bash
 git log --oneline -5
 ```
+
+## Colors come through
+
+The console reports itself as `xterm-256color`, so tools color their output the way they would in a terminal, and the escape codes they send are parsed rather than stripped: they become style on the text, never text of their own.
+
+The sixteen named colors, and the attributes that go with them:
+
+```bash
+printf '\033[31merror\033[0m  \033[33mwarning\033[0m  \033[32mok\033[0m\n'
+printf '\033[1mbold\033[0m  \033[4munderline\033[0m  \033[7mreverse\033[0m  \033[2mdim\033[0m\n'
+```
+
+The 256-color cube, and 24-bit color for tools that ask for an exact one:
+
+```bash
+for i in 196 202 208 214 220 226; do printf '\033[38;5;%dm██\033[0m' $i; done; echo
+for r in 40 80 120 160 200 240; do printf '\033[48;2;%d;80;200m    \033[0m' $r; done; echo
+```
+
+A carriage return rewrites its own line, which is how a progress counter stays one row instead of becoming a hundred. Run this and watch the percentage climb in place:
+
+```bash
+for i in 0 25 50 75 100; do printf '\rworking… %d%%' $i; sleep 0.3; done; printf '\rdone.\033[K\n'
+```
+
+The `\033[K` on the last line is not decoration. A rewrite only covers as many columns as it is long, so `done.` alone would leave the tail of `working… 100%` standing behind it — erase-to-end-of-line is how a tool clears the rest, and it is honoured here.
+
+What is not emulated is the cursor moving *between* lines — the multi-line in-place repainting docker and cargo do. Those frames stack up rather than replacing each other. Color on every run was judged the better trade.
 
 ## Other blocks don't
 

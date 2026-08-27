@@ -1079,7 +1079,7 @@ extension NativeDocumentView: BlockHost {
     }
 
     public func blockRequestsRun(_ command: String,
-                                 onOutput: @escaping (String) -> Void,
+                                 onOutput: @escaping (TerminalSnapshot) -> Void,
                                  completion: @escaping (ProcessRunner.Output?) -> Void) {
         guard let document else { completion(nil); return }
         pendingWorkCount += 1

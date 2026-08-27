@@ -128,7 +128,7 @@ final class RunnableCodeBlockTests: XCTestCase {
         // The pty streams into the running console as the command produces output.
         let emptyHeight = card.runPanels[0].fullHeight(width: width)
         host.emitOutput("hello\nworld\nagain\n")
-        XCTAssertEqual(card.runPanels[0].liveTranscript, "hello\nworld\nagain\n",
+        XCTAssertEqual(card.runPanels[0].liveTranscript.plainText, "hello\nworld\nagain\n",
                        "live output must land in the console before the command exits")
         XCTAssertTrue(card.runPanels[0].isRunning)
         XCTAssertGreaterThan(card.runPanels[0].fullHeight(width: width), emptyHeight,
@@ -271,8 +271,10 @@ final class RunnableCodeBlockTests: XCTestCase {
         let insets = metrics.codeCardInsets
         let body = panel.fullHeight(width: width)
             - CardChrome.headerHeight - insets.bodyTop - insets.bodyBottom
-        let line = TextComponentView.height(
-            of: RunOutputPanel.liveText("x", metrics: metrics), width: 1000)
+        // The panel's own advance from one row to the next, which is a row's height *plus*
+        // its leading — measuring a lone "x" would answer the height alone and no longer
+        // divides the viewport evenly.
+        let line = RunOutputPanel.lineHeight(metrics: metrics)
         XCTAssertLessThanOrEqual(body, RunOutputPanel.maxOutputTextHeight)
         XCTAssertEqual(body.truncatingRemainder(dividingBy: line), 0,
                        "a viewport of 13½ lines shows half a string at its edge")
@@ -326,8 +328,7 @@ final class RunnableCodeBlockTests: XCTestCase {
         card.layoutSubtreeIfNeeded()
 
         let panel = try XCTUnwrap(card.runPanels.first)
-        let line = TextComponentView.height(
-            of: RunOutputPanel.liveText("x", metrics: metrics), width: 1000)
+        let line = RunOutputPanel.lineHeight(metrics: metrics)
         let scroll = try XCTUnwrap(panel.subviews.compactMap { $0 as? NSScrollView }.first)
         let text = try XCTUnwrap(scroll.documentView)
         XCTAssertLessThan(text.frame.height, line * 2,

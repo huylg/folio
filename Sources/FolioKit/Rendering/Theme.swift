@@ -150,6 +150,18 @@ public enum Ink {
         return base.blending(lift, toward: .white) ?? base
     }
 
+    // MARK: Terminal
+
+    /// The console's 256-color palette, resolving what an SGR sequence asked for.
+    ///
+    /// Concrete sRGB values rather than system colors, and deliberately so: these *are* the
+    /// colors a tool named, and slot 1 has to be the red every other terminal shows, not the
+    /// red this appearance happens to prefer. Folio is dark only, so there is one backdrop to
+    /// tune against and no adaptation to lose.
+    public static func terminal(_ index: UInt8) -> NSColor {
+        TerminalPalette.color(at: index)
+    }
+
     // MARK: Accessibility display settings
 
     /// These must be observed on `NSWorkspace.shared.notificationCenter`; registering on
@@ -192,6 +204,58 @@ public enum Ink {
 }
 
 // MARK: - Tag palette
+
+/// The 256-color palette a console renders `TerminalColor.palette` through.
+///
+/// The 16 named slots were tuned against `Ink.codeBackground` and measured with the same
+/// contrast helper the rest of the palette is tested with: slots 1–15 all clear the 4.5:1
+/// readable floor, slot 8 — the dimmest, "bright black" — by the narrowest margin at 4.70:1.
+///
+/// Slot 0 is the exception, and knowingly. It is *black*, and black on a near-black card is a
+/// hole in the page. It is lifted to a dark grey that measures 2.08:1 — visible as text, and
+/// still under the floor, because a tool asking for black on this surface is asking for
+/// something the surface cannot give. Lifting it far enough to pass would stop it being the
+/// color that was asked for. `ContrastTests` pins both halves of that decision.
+///
+/// Slots 16–255 are not tuned at all, and must not be: they are the standard xterm cube and
+/// grey ramp, which tools index into arithmetically — `16 + 36r + 6g + b` for a color, a
+/// linear walk up the greys for a gradient. Hand-adjusting an entry there would put a step in
+/// a ramp some tool is drawing smoothly.
+public enum TerminalPalette {
+
+    /// The named slots: 0–7 normal, 8–15 bright.
+    public static let namedCount = 16
+
+    private static let named: [UInt32] = [
+        0x53555C, 0xFF6B62, 0x63D16A, 0xE5C07B, 0x7AA2F7, 0xD68CF0, 0x56CFD8, 0xD6D6DC,
+        0x8B8D98, 0xFF8B82, 0x93E08F, 0xF2D08B, 0x9DB8FF, 0xE2A6FF, 0x7EE0E8, 0xF2F2F6,
+    ]
+
+    /// The six levels each channel of the 6×6×6 cube takes. xterm's own values — the first
+    /// step is a large one, which is why they are not evenly spaced.
+    private static let cubeLevels: [Int] = [0, 95, 135, 175, 215, 255]
+
+    public static func color(at index: UInt8) -> NSColor {
+        let slot = Int(index)
+        if slot < namedCount { return rgb(named[slot]) }
+        if slot < 232 {
+            let offset = slot - 16
+            return NSColor(srgbRed: level(cubeLevels[offset / 36]),
+                           green: level(cubeLevels[(offset / 6) % 6]),
+                           blue: level(cubeLevels[offset % 6]), alpha: 1)
+        }
+        let grey = level(8 + 10 * (slot - 232))
+        return NSColor(srgbRed: grey, green: grey, blue: grey, alpha: 1)
+    }
+
+    private static func level(_ value: Int) -> CGFloat { CGFloat(value) / 255 }
+
+    private static func rgb(_ hex: UInt32) -> NSColor {
+        NSColor(srgbRed: level(Int((hex >> 16) & 0xFF)),
+                green: level(Int((hex >> 8) & 0xFF)),
+                blue: level(Int(hex & 0xFF)), alpha: 1)
+    }
+}
 
 /// Colors for frontmatter tag pills and sidebar tag rows.
 ///

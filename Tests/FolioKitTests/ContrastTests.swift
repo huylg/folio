@@ -105,6 +105,53 @@ final class ContrastTests: XCTestCase {
         }
     }
 
+    /// The console's named palette sits on the code surface and is read as prose — a build
+    /// log's warnings and errors are text a reader is meant to actually read.
+    ///
+    /// Slot 0 is exempt, and knowingly. It is *black*: a tool asking for black on a near-black
+    /// card is asking for something this surface cannot give, so it is lifted only far enough
+    /// to stop being a hole in the page, not far enough to pass. Anything that lifted it to
+    /// 4.5:1 would no longer be the color that was asked for.
+    func testTerminalPaletteClearsTheFloorExceptForBlack() {
+        for slot in 1..<UInt8(TerminalPalette.namedCount) {
+            let measured = ratio(Ink.terminal(slot), on: Ink.codeBackground)
+            XCTAssertGreaterThanOrEqual(
+                measured, readableFloor,
+                "terminal slot \(slot) is \(String(format: "%.2f", measured)):1 on the "
+                    + "code background"
+            )
+        }
+
+        let black = ratio(Ink.terminal(0), on: Ink.codeBackground)
+        XCTAssertLessThan(black, readableFloor,
+                          "slot 0 is documented as under the floor; if it now passes, the "
+                              + "documentation is what is wrong")
+        XCTAssertGreaterThan(black, 1.8,
+                             "slot 0 must still be visible as text, not a hole in the card")
+    }
+
+    /// The cube and the grey ramp are arithmetic, not taste: tools index into them by formula
+    /// (`16 + 36r + 6g + b`) and walk the greys linearly to draw a gradient. A hand-adjusted
+    /// entry would put a visible step in something a tool is drawing smoothly.
+    func testTerminalCubeAndGreysAreEvenlyDerived() {
+        let appearance = self.appearance
+        // Pure red at each of the six cube levels, which must climb monotonically.
+        let reds = (0..<6).map { level -> CGFloat in
+            let color = Ink.terminal(UInt8(16 + 36 * level))
+            return color.components(in: appearance)?.r ?? -1
+        }
+        XCTAssertEqual(reds.map { Int(($0 * 255).rounded()) }, [0, 95, 135, 175, 215, 255],
+                       "the cube must use xterm's own levels, unevenly spaced as they are")
+
+        let greys = (232...255).map { index -> CGFloat in
+            Ink.terminal(UInt8(index)).components(in: appearance)?.r ?? -1
+        }
+        for (darker, lighter) in zip(greys, greys.dropFirst()) {
+            XCTAssertGreaterThan(lighter, darker, "the grey ramp must climb without a step")
+        }
+        XCTAssertEqual(Int((greys[0] * 255).rounded()), 8, "the ramp starts at 8, not black")
+    }
+
     /// Tag pill text sits on its own tinted fill, which is translucent over a card.
     func testTagPillTextIsReadable() {
         let card = surface(Ink.cardFill)
