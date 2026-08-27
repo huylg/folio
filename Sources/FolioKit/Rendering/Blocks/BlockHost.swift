@@ -47,6 +47,13 @@ public final class BlockSizeCache {
         return value
     }
 
+    /// The cached height, without measuring — `nil` when this `(id, width)` was never
+    /// measured. Lets a height-change report be checked for being height-neutral before it
+    /// costs a page reflow.
+    public func cachedHeight(for id: Int, width: CGFloat) -> CGFloat? {
+        heights[Key(id: id, width: Int(width.rounded()))]
+    }
+
     public func removeAll() { heights.removeAll() }
 
     public func remove(id: Int) {

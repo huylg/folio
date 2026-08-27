@@ -88,7 +88,13 @@ public final class TextComponentView: NSTextView, DimmableComponent {
 
     required public init?(coder: NSCoder) { fatalError("not supported") }
 
+    /// How many times any prose view has been configured, ever. Configuring is the expensive
+    /// thing a reflow can do to a view — a full TextKit relayout — so the tests that matter
+    /// assert it does not happen to views whose content did not change.
+    static var configureCount = 0
+
     public func configure(with attributed: NSAttributedString, kind: BlockKind) {
+        Self.configureCount += 1
         self.kind = kind
         // The view is recycled; a hover from its previous life must not outlive the content
         // it was hovering on.
@@ -345,11 +351,17 @@ final class TextMeasurer {
         size(of: attributed, width: width).height
     }
 
+    /// How many layouts have ever been run. Laying out is the expensive thing this class
+    /// does — a whole transcript per call — so the tests that matter are the ones asserting
+    /// the callers that cache don't come back for the same text.
+    private(set) var measures = 0
+
     /// The space the text actually uses at `width`: the height, and the widest laid-out line.
     /// The width lets a container be sized to its content — narrowing it to this value cannot
     /// change the wrapping, because every line already fits.
     func size(of attributed: NSAttributedString, width: CGFloat) -> NSSize {
         guard attributed.length > 0 else { return .zero }
+        measures += 1
         container.size = NSSize(width: max(1, width), height: .greatestFiniteMagnitude)
         contentStorage.textStorage?.setAttributedString(attributed)
         layoutManager.ensureLayout(for: layoutManager.documentRange)

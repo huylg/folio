@@ -96,6 +96,19 @@ public final class CodeComponentView: HeaderedCardView {
         return out
     }
 
+    /// The code text's height at the last width asked for. The code never changes after init,
+    /// so the measure is pure in the width — and it is read from `layout()` and `cardRect`
+    /// (which runs on every draw) once consoles exist, where re-running TextKit per scroll
+    /// frame is what made pages with consoles crawl.
+    private var cachedCodeTextHeight: (width: CGFloat, height: CGFloat)?
+
+    private func codeTextHeight(width: CGFloat) -> CGFloat {
+        if let cached = cachedCodeTextHeight, cached.width == width { return cached.height }
+        let height = TextComponentView.height(of: body.attributedString(), width: width)
+        cachedCodeTextHeight = (width, height)
+        return height
+    }
+
     public override func layout() {
         super.layout()
         let insets = metrics.codeCardInsets
@@ -103,7 +116,7 @@ public final class CodeComponentView: HeaderedCardView {
         // what remains of the card.
         let codeHeight = runPanels.isEmpty
             ? bounds.height - CardChrome.headerHeight - insets.bodyTop - insets.bodyBottom
-            : TextComponentView.height(of: body.attributedString(), width: max(1, bounds.width))
+            : codeTextHeight(width: max(1, bounds.width))
         body.frame = NSRect(
             x: 0,
             y: CardChrome.headerHeight + insets.bodyTop,
@@ -126,9 +139,10 @@ public final class CodeComponentView: HeaderedCardView {
     /// The code card's chrome ends at the code; the consoles below draw their own cards.
     public override var cardRect: NSRect {
         guard !runPanels.isEmpty else { return bounds }
+        let insets = metrics.codeCardInsets
         return NSRect(x: 0, y: 0, width: bounds.width,
-                      height: Self.height(lines: body.attributedString(),
-                                          width: max(1, bounds.width), metrics: metrics))
+                      height: CardChrome.headerHeight + insets.bodyTop
+                          + codeTextHeight(width: max(1, bounds.width)) + insets.bodyBottom)
     }
 
     /// The click itself is the consent: the source is right there in the card. The button is
@@ -250,10 +264,11 @@ public final class CodeComponentView: HeaderedCardView {
     }
 
     public override func sizeThatFits(width: CGFloat) -> CGSize {
-        CGSize(width: width,
-               height: Self.height(lines: body.attributedString(), width: width,
-                                   metrics: metrics)
-                   + outputPanelHeight(width: width))
+        let insets = metrics.codeCardInsets
+        return CGSize(width: width,
+                      height: CardChrome.headerHeight + insets.bodyTop
+                          + codeTextHeight(width: max(1, width)) + insets.bodyBottom
+                          + outputPanelHeight(width: width))
     }
 }
 
@@ -343,6 +358,7 @@ final class RunOutputPanel: HeaderedCardView {
         // against the old content.
         pinTailAfterLayout = isScrolledToTail
         liveTranscript = transcript
+        invalidateBodyCache()
         textView.configure(with: Self.liveText(transcript, metrics: metrics), kind: .paragraph)
         needsLayout = true
         onHeightChange?()
@@ -376,6 +392,7 @@ final class RunOutputPanel: HeaderedCardView {
         let runningHeight = fullHeight(width: width)
 
         entry = CodeComponentView.RunEntry(output: output, finishedAt: Date())
+        invalidateBodyCache()
         spinner.stopAnimation(nil)
         spinner.removeFromSuperview()
         textView.configure(with: CodeComponentView.outputText(output, metrics: metrics),
@@ -396,9 +413,33 @@ final class RunOutputPanel: HeaderedCardView {
     }
 
     /// The current body text: the logged result once finished, the raw pty transcript before.
+    ///
+    /// Cached, with its measured size, until the transcript or the result changes: both are
+    /// read on every measure, layout, and draw pass — several times each — and rebuilding and
+    /// re-laying-out a whole transcript per scroll frame is what made pages with consoles slow.
+    private var cachedBodyText: NSAttributedString?
+    private var cachedContentSize: NSSize?
+
+    private func invalidateBodyCache() {
+        cachedBodyText = nil
+        cachedContentSize = nil
+    }
+
     private var bodyText: NSAttributedString {
-        if let entry { return CodeComponentView.outputText(entry.output, metrics: metrics) }
-        return Self.liveText(liveTranscript, metrics: metrics)
+        if let cachedBodyText { return cachedBodyText }
+        let text: NSAttributedString
+        if let entry { text = CodeComponentView.outputText(entry.output, metrics: metrics) }
+        else { text = Self.liveText(liveTranscript, metrics: metrics) }
+        cachedBodyText = text
+        return text
+    }
+
+    /// The transcript's laid-out size at the unwrapped measure width.
+    private var contentSize: NSSize {
+        if let cachedContentSize { return cachedContentSize }
+        let size = TextMeasurer.shared.size(of: bodyText, width: Self.unwrappedMeasureWidth)
+        cachedContentSize = size
+        return size
     }
 
     /// Live pty text, before any exit dressing — plain body ink, same mono face as the log.
@@ -415,10 +456,8 @@ final class RunOutputPanel: HeaderedCardView {
 
     func fullHeight(width: CGFloat) -> CGFloat {
         let insets = metrics.codeCardInsets
-        let content = TextMeasurer.shared.size(of: bodyText,
-                                               width: Self.unwrappedMeasureWidth)
         return CardChrome.headerHeight + insets.bodyTop
-            + scrollViewportHeight(forContent: content, panelWidth: width)
+            + scrollViewportHeight(forContent: contentSize, panelWidth: width)
             + insets.bodyBottom
     }
 
@@ -465,7 +504,7 @@ final class RunOutputPanel: HeaderedCardView {
         let width = max(1, bounds.width)
 
         let viewportWidth = Self.textWidth(panelWidth: width, metrics: metrics)
-        let content = TextMeasurer.shared.size(of: bodyText, width: Self.unwrappedMeasureWidth)
+        let content = contentSize
         // The document is as wide as its widest line; a narrower transcript still fills the
         // viewport so selection and clicks behave across its whole width.
         textView.frame = NSRect(x: 0, y: 0,
