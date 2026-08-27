@@ -193,9 +193,7 @@ public final class UpdateInstaller: NSObject, URLSessionDownloadDelegate {
             return .failure(error)
         }
         defer {
-            // `-force` because a Finder or Spotlight peek can hold the volume briefly, and a
-            // failed detach here would strand it.
-            run("/usr/bin/hdiutil", ["detach", mountPoint.path, "-force", "-quiet"])
+            detach(mountPoint)
             try? FileManager.default.removeItem(at: mountPoint)
         }
 
@@ -212,17 +210,25 @@ public final class UpdateInstaller: NSObject, URLSessionDownloadDelegate {
         return .success(destination)
     }
 
-    /// How many times a mount is worth trying before the image is called bad.
-    static let mountAttempts = 3
+    /// How many times a mount held up by a busy machine is worth trying. The waits between them
+    /// lengthen, so this is around fifteen seconds of patience in total — long enough to outlast
+    /// the contention that produces these failures, and only ever spent when `hdiutil` has said
+    /// that contention is what went wrong.
+    static let mountAttempts = 6
+
+    /// How many times a mount is worth trying when `hdiutil` blamed the image rather than the
+    /// machine. More than one because the diagnosis is a string we are reading by hand, and a
+    /// wording we have not seen should still get the benefit of a second try; not many more
+    /// because a file that is not a disk image will never become one.
+    static let unrecognizedImageAttempts = 2
 
     /// `hdiutil attach`, retried.
     ///
     /// Mounting is the one step in the unpack that fails for reasons that have nothing to do with
     /// the bytes we downloaded: disk arbitration is busy, another image is still detaching, the
-    /// machine is loaded. `hdiutil` reports all of that the same way it reports a file that is not
-    /// an image at all — a non-zero exit — so the retry cannot be conditional on the reason. A
-    /// file that is genuinely not a disk image simply fails every attempt and is refused a couple
-    /// of seconds later.
+    /// machine is loaded. `hdiutil` exits non-zero either way, but it does say which — "Resource
+    /// temporarily unavailable" for contention, "no mountable file systems" for a file that is not
+    /// an image — so a loaded machine gets waited out while a bad download is refused promptly.
     ///
     /// Run without `-quiet` so a refusal can say why; `-quiet` suppresses the diagnosis too, and
     /// "The disk image would not mount." with nothing after it is not something a reader, or a CI
@@ -237,14 +243,44 @@ public final class UpdateInstaller: NSObject, URLSessionDownloadDelegate {
             ])
             if attach.status == 0 { return .success(()) }
             complaint = attach.errorText.isEmpty ? attach.outputText : attach.errorText
-            guard attempt < mountAttempts else { break }
+
+            let budget = isMachineBusy(complaint) ? mountAttempts : unrecognizedImageAttempts
+            guard attempt < budget else { break }
             // Clear whatever a half-finished attach left behind, and give disk arbitration a
             // moment: retrying into a mount point it is still working on fails the same way.
-            run("/usr/bin/hdiutil", ["detach", mountPoint.path, "-force", "-quiet"])
-            Thread.sleep(forTimeInterval: 1)
+            // One try only — an attach that failed usually left nothing to detach, and this is
+            // tidying up before the wait rather than the unmount that has to succeed.
+            detach(mountPoint, attempts: 1)
+            Thread.sleep(forTimeInterval: Double(attempt))
         }
         return .failure(.corruptArchive(
             complaint.isEmpty ? "The disk image would not mount." : complaint))
+    }
+
+    /// Whether `hdiutil` is complaining about the state of the machine rather than the image —
+    /// the kernel's own errno text, as it comes back through `hdiutil` when the framework it
+    /// drives is out of a resource or still holding one from an earlier mount.
+    static func isMachineBusy(_ complaint: String) -> Bool {
+        let text = complaint.lowercased()
+        return ["resource temporarily unavailable",
+                "resource busy",
+                "device busy",
+                "device not configured",
+                "operation timed out"].contains { text.contains($0) }
+    }
+
+    /// Unmounts, retried.
+    ///
+    /// `-force` because a Finder or Spotlight peek can hold the volume briefly. A detach that
+    /// loses that race anyway leaves an image attached, which is both a volume the reader has to
+    /// eject by hand and one more attachment against whatever limit the next mount runs into.
+    static func detach(_ mountPoint: URL, attempts: Int = 3) {
+        for attempt in 1...max(1, attempts) {
+            let result = run("/usr/bin/hdiutil",
+                             ["detach", mountPoint.path, "-force", "-quiet"])
+            if result.status == 0 { return }
+            if attempt < attempts { Thread.sleep(forTimeInterval: 0.5) }
+        }
     }
 
     static func firstAppBundle(in directory: URL) -> URL? {
