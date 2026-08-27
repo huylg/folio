@@ -187,6 +187,39 @@ final class ConsoleColorTests: XCTestCase {
                        "the settled console must not flatten what the live one showed")
     }
 
+    /// A running console shows the lines the command printed and nothing else. The cursor is
+    /// parked on a fresh row after every newline, and drawing that row hangs a blank line off
+    /// the foot of the console — a gap that reads as broken padding.
+    func testTheCursorRowIsNotDrawnAsABlankLastLine() throws {
+        let text = try runningConsole(parse("tick 1\ntick 2\n"))
+        XCTAssertEqual(text.attributedString().string, "tick 1\ntick 2",
+                       "the row the next line will go on must not be rendered as a line")
+    }
+
+    /// Only the cursor's row goes: a blank line the command actually printed is output, and
+    /// the console is the log, not a tidied-up version of it.
+    func testABlankLineTheCommandPrintedSurvives() throws {
+        let text = try runningConsole(parse("tick 1\n\ntick 2\n"))
+        XCTAssertEqual(text.attributedString().string, "tick 1\n\ntick 2")
+    }
+
+    /// The live view and the logged one must agree on how many lines there are, or the console
+    /// jumps by a row at the moment the command exits.
+    func testTheConsoleDoesNotChangeHeightWhenTheRunFinishes() {
+        let transcript = parse("tick 1\ntick 2\n")
+        let running = RunOutputPanel.settledHeight(
+            bodyText: RunOutputPanel.liveText(transcript, metrics: metrics),
+            width: width, metrics: metrics)
+        let finished = RunOutputPanel.settledHeight(
+            bodyText: RunOutputPanel.outputText(
+                ProcessRunner.Output(status: 0, outputText: transcript.plainText, errorText: "",
+                                     transcript: transcript.trimmingBlankEdges()),
+                metrics: metrics),
+            width: width, metrics: metrics)
+        XCTAssertEqual(running, finished, accuracy: 0.01,
+                       "settling into the logged result must not resize the console")
+    }
+
     /// The non-pty paths — `UpdateInstaller`, and any host that fabricates a result — carry no
     /// transcript at all, and must still render as they always did.
     func testAResultWithNoTranscriptStillRendersItsText() throws {

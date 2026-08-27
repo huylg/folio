@@ -90,10 +90,27 @@ public struct TerminalSnapshot: Hashable, Sendable {
 
     public var isEmpty: Bool { lines.allSatisfy(\.isEmpty) }
 
+    /// The snapshot without the empty row the cursor is parked on.
+    ///
+    /// Every line a command prints ends in a newline, and a newline moves the cursor onto a
+    /// fresh row — so a live transcript always carries one more line than it has output, and
+    /// drawing it leaves a blank row under the last line of the log. That gap reads as a
+    /// mistake in the card's padding rather than as content, and it makes the console shrink
+    /// by a line the moment the run finishes and the logged result is trimmed.
+    ///
+    /// Only the final row goes, and only when it is empty. Blank rows in the middle are output
+    /// a command asked for, and so is a blank row it printed before its last line — dropping
+    /// more than the one the cursor sits on would flatten `a\n\n` into `a\n`.
+    public func droppingCursorLine() -> TerminalSnapshot {
+        guard let last = lines.last, last.isEmpty else { return self }
+        return TerminalSnapshot(lines: Array(lines.dropLast()))
+    }
+
     /// The snapshot with blank edges removed — the exact equivalent of running
     /// `trimmingCharacters(in: .whitespacesAndNewlines)` over `plainText`, which is what the
     /// logged result has always been trimmed by. Applied to the final transcript only: a live
-    /// one keeps its trailing newline, or the console's last line would jump as it arrives.
+    /// one keeps its trailing newline, and the renderer drops the cursor's row instead, so the
+    /// two agree on how many lines there are without the model losing the terminal's state.
     public func trimmingBlankEdges() -> TerminalSnapshot {
         let blank = { (line: TerminalLine) in
             line.plainText.trimmingCharacters(in: .whitespaces).isEmpty
