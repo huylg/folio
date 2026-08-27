@@ -115,7 +115,7 @@ final class HeadingTrackingTests: XCTestCase {
         var reported: [Int] = []
         view.onHeadingChange = { reported.append($0) }
         view.render(document: try sampleDocument(), metrics: metrics)
-        settle(view)
+        settleLayout(view)
         return (view, reported)
     }
 
@@ -127,10 +127,37 @@ final class HeadingTrackingTests: XCTestCase {
         view.layoutSubtreeIfNeeded()
     }
 
+    /// Pumps until the document has stopped growing, rather than for a fixed number of turns.
+    ///
+    /// These tests scroll to offsets measured off the document's height, so they need that height
+    /// to be final. A fixed spin is enough on an idle machine and not on a loaded one, where
+    /// laying out this document takes longer than the spin allows and the rest of it arrives
+    /// during the scrolling — moving the ground the test is standing on.
+    private func settleLayout(_ view: NativeDocumentView, timeout: TimeInterval = 10) {
+        let deadline = Date().addingTimeInterval(timeout)
+        var height = CGFloat.nan
+        var stable = 0
+        while Date() < deadline, stable < 3 {
+            settle(view, turns: 4)
+            let current = view.scrollView.documentView?.frame.height ?? 0
+            stable = current == height ? stable + 1 : 0
+            height = current
+        }
+    }
+
+    /// Scrolls, and waits for the viewport to actually be there.
+    ///
+    /// A relayout landing after the scroll can clamp the offset back towards the top, and the
+    /// outline follows the viewport wherever it goes — so a test that believes it only ever
+    /// scrolls forward would see the outline move backwards through no fault of the tracking.
+    /// Confirming the offset stuck keeps that premise true.
     private func scroll(_ view: NativeDocumentView, to y: CGFloat, turns: Int = 4) {
-        view.scrollView.contentView.scroll(to: NSPoint(x: 0, y: y))
-        view.scrollView.reflectScrolledClipView(view.scrollView.contentView)
-        settle(view, turns: turns)
+        for _ in 0..<10 {
+            view.scrollView.contentView.scroll(to: NSPoint(x: 0, y: y))
+            view.scrollView.reflectScrolledClipView(view.scrollView.contentView)
+            settle(view, turns: turns)
+            if abs(view.scrollView.documentVisibleRect.minY - y) <= 1 { return }
+        }
     }
 
     /// The bug from the screenshot: scrolled fully to the bottom, the outline still pointed at a
