@@ -5,10 +5,17 @@ import AppKit
 public struct SectionPreview {
     public let components: [DocumentComponent]
     public let metrics: DocumentMetrics
+    /// Where a shell block in the card runs, and whose session store its consoles share.
+    /// The current document's own context makes a run started in the card appear on the same
+    /// block in the reading pane; a cross-file peek gets a throwaway store of its own; nil
+    /// leaves the Run button inert.
+    public let runContext: RunContext?
 
-    public init(components: [DocumentComponent], metrics: DocumentMetrics) {
+    public init(components: [DocumentComponent], metrics: DocumentMetrics,
+                runContext: RunContext? = nil) {
         self.components = components
         self.metrics = metrics
+        self.runContext = runContext
     }
 }
 

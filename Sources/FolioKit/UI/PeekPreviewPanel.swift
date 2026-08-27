@@ -216,6 +216,12 @@ final class PeekPreviewPanel {
     private func fill(with section: SectionPreview, width: CGFloat) -> CGFloat {
         host.metrics = section.metrics
         host.sizeCache.removeAll()
+        // The section's own run context: runs execute at the previewed document's root, and
+        // their sessions join its store — the shared one when it is the current document,
+        // which is what mirrors a console onto the reading pane. Set before `setComponents`,
+        // so the fresh cards bind to their blocks' keys and adopt any existing consoles.
+        host.runContext = section.runContext
+        stackView.runContext = section.runContext
         stackView.columnCount = 1
         stackView.columnWidth = width
         // No pagination in a card: one column, running on for as long as the section is.
@@ -333,6 +339,9 @@ final class PeekPreviewPanel {
         // `DocumentStackView.contentInsets`.
         stackView.host = host
         stackView.contentInsets = (top: 0, bottom: 0)
+        // A run console unfolding inside the card changes a block's height after presentation
+        // — the one thing that does — and the card grows to fit it.
+        host.onBlockHeightChange = { [weak self] view in self?.blockGrew(view) }
 
         // Content taller than the card scrolls inside it; the caps in
         // `SectionPreviewBuilder` are only a safety bound on a giant section.
@@ -423,6 +432,60 @@ final class PeekPreviewPanel {
         )
     }
 
+    /// Re-sizes the card around a block whose height changed after presentation — a run
+    /// console unfolding, folding away, or growing with live output.
+    ///
+    /// Strictly a re-measure, never a re-fill: `fill` calls `setComponents`, which recycles
+    /// every view — the very card whose console is mid-animation included. The one cached
+    /// height is dropped and the stack re-measured; the retained views survive that, and they
+    /// survive the column narrowing below for the same reason.
+    ///
+    /// The card grows *downward*, top edge pinned — screen coordinates are unflipped, so that
+    /// means holding `maxY`. Re-centering on the anchor would jiggle the card around its
+    /// middle on every step of the unfold. Height still caps at `maxContentHeight`; past it
+    /// the content scrolls inside the card, and the console itself caps and scrolls long
+    /// before that.
+    private func blockGrew(_ view: NSView) {
+        guard isShown, let panel, !scrollView.isHidden else { return }
+        stackView.remeasureComponent(containing: view)
+        stackView.ensureMeasured()
+        var fullHeight = stackView.contentHeight
+
+        // Content just crossed into overflow: the column steps back from under the overlay
+        // scroller, exactly as `show` does at presentation time, and is re-measured at the
+        // narrower width.
+        let gutterWidth = Self.cardWidth - Self.padding * 2 - Self.scrollerGutter
+        if fullHeight > Self.maxContentHeight, stackView.columnWidth > gutterWidth {
+            stackView.columnWidth = gutterWidth
+            stackView.setFrameSize(NSSize(width: gutterWidth,
+                                          height: stackView.frame.height))
+            stackView.ensureMeasured()
+            fullHeight = stackView.contentHeight
+        }
+
+        let visibleHeight = min(fullHeight, Self.maxContentHeight)
+        contentOverflows = fullHeight > visibleHeight
+        let cardSize = NSSize(
+            width: Self.cardWidth,
+            height: Self.headerHeight + visibleHeight + Self.padding * 2
+        )
+
+        var frame = panel.frame
+        frame.origin.y = frame.maxY - cardSize.height
+        frame.size = cardSize
+        if let visible = panel.screen?.visibleFrame {
+            frame.origin.y = min(max(frame.origin.y, visible.minY),
+                                 visible.maxY - frame.height)
+        }
+        // Plain setFrame, no animator: the console's reveal timer is already driving this at
+        // sixty steps a second, and an animation per step would fight the next one.
+        panel.setFrame(frame, display: true)
+
+        layoutContent(cardSize: cardSize, fullContentHeight: fullHeight)
+        stackView.populateVisible()
+        updateBottomFade()
+    }
+
     /// The fade at the card's bottom edge means "there is more below". It has to retract at
     /// the end of the content, or it would sit over the last line claiming otherwise.
     private func updateBottomFade() {
@@ -439,8 +502,11 @@ final class PeekPreviewPanel {
         for size: NSSize, besideAnchor anchor: NSRect, on screen: NSScreen?
     ) -> NSRect {
         var frame = NSRect(
-            x: anchor.maxX + Self.anchorGap,
-            y: anchor.midY - size.height / 2,
+            x: (anchor.maxX + Self.anchorGap).rounded(),
+            // Rounded: window frames are integral, and a fractional origin re-rounded on
+            // every later setFrame — the grow path pins the top edge by reading the frame
+            // back — walks the card a point at a time.
+            y: (anchor.midY - size.height / 2).rounded(),
             width: size.width, height: size.height
         )
         guard let visible = screen?.visibleFrame else { return frame }
@@ -461,13 +527,28 @@ final class PeekPreviewPanel {
 /// The card is a peek, so a link in it opens nothing — no `linkDelegate` is set and open
 /// requests are dropped. A copy button still copies, which costs nothing and is what the same
 /// card on the page would do.
+///
+/// A shell block, though, runs: the click is the same consent it is on the page, and the run
+/// writes into a `RunSession` — shared with the reading pane when the card previews the
+/// current document, so the console appears on the block there too, and lives on if the card
+/// closes mid-run. The command executes at the *previewed* document's root, which a cross-file
+/// peek's context points at the target's own project.
 private final class PreviewBlockHost: BlockHost {
 
     var metrics = DocumentMetrics(settings: .shared)
     var blockMetrics: DocumentMetrics { metrics }
     let sizeCache = BlockSizeCache()
     let diagramLayouts = DiagramLayoutCache()
+    /// The card's own counter, deliberately not the reading pane's: snapshot quiescence
+    /// watches the pane's host, and a peek's run is not the page's work.
     var pendingWorkCount = 0
+
+    /// Where the current section's blocks run, and whose store their sessions join. Set on
+    /// every fill; nil (no context on the preview) leaves the Run button inert.
+    var runContext: RunContext?
+    /// A block's height changed after presentation — a console unfolding — and the card must
+    /// grow with it. The panel installs this.
+    var onBlockHeightChange: ((NSView) -> Void)?
 
     func blockRequestsOpen(_ destination: String) {}
 
@@ -476,15 +557,24 @@ private final class PreviewBlockHost: BlockHost {
         NSPasteboard.general.setString(text, forType: .string)
     }
 
-    /// A peek must never execute anything; the request is dropped like an open.
     func blockRequestsRun(_ command: String,
                           onOutput: @escaping (String) -> Void,
                           completion: @escaping (ProcessRunner.Output?) -> Void) {
-        completion(nil)
+        guard let runContext else {
+            completion(nil)
+            return
+        }
+        pendingWorkCount += 1
+        ProcessRunner.streamShell(command, at: runContext.rootURL,
+                                  onOutput: onOutput) { [weak self] result in
+            self?.pendingWorkCount -= 1
+            completion(result)
+        }
     }
 
-    /// A peek card is sized once, at presentation; nothing in it changes height afterwards.
-    func blockHeightDidChange(_ view: NSView) {}
+    func blockHeightDidChange(_ view: NSView) {
+        onBlockHeightChange?(view)
+    }
 }
 
 /// The light veil behind a hover card, focusing the eye on it.

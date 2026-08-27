@@ -19,12 +19,12 @@ final class RunnableCodeBlockTests: XCTestCase {
             .appendingPathComponent("folio-runnable-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
         // Geometry assertions want the panel's final state, not a frame mid-unfold.
-        savedRevealDuration = CodeComponentView.outputRevealDuration
-        CodeComponentView.outputRevealDuration = 0
+        savedRevealDuration = RunOutputPanel.revealDuration
+        RunOutputPanel.revealDuration = 0
     }
 
     override func tearDownWithError() throws {
-        CodeComponentView.outputRevealDuration = savedRevealDuration
+        RunOutputPanel.revealDuration = savedRevealDuration
         try FileManager.default.removeItem(at: scratch)
     }
 
@@ -201,7 +201,7 @@ final class RunnableCodeBlockTests: XCTestCase {
         card.showRunOutput(ProcessRunner.Output(status: 0, outputText: chatty, errorText: ""))
         XCTAssertLessThanOrEqual(
             card.outputPanelHeight(width: 500),
-            CodeComponentView.maxOutputTextHeight + CardChrome.headerHeight + 60,
+            RunOutputPanel.maxOutputTextHeight + CardChrome.headerHeight + 60,
             "a chatty command must scroll inside the console, not take over the page")
     }
 
@@ -249,13 +249,13 @@ final class RunnableCodeBlockTests: XCTestCase {
         let card = CodeComponentView(label: "bash", source: "x", language: "bash",
                                      lines: lines("x"), metrics: metrics,
                                      host: RecordingHost())
-        for run in 1...(CodeComponentView.maxRunHistory + 3) {
+        for run in 1...(RunSessionStore.maxRunHistory + 3) {
             card.showRunOutput(ProcessRunner.Output(status: 0, outputText: "run \(run)",
                                                     errorText: ""))
         }
-        XCTAssertEqual(card.runEntries.count, CodeComponentView.maxRunHistory)
+        XCTAssertEqual(card.runEntries.count, RunSessionStore.maxRunHistory)
         XCTAssertEqual(card.runOutput?.outputText,
-                       "run \(CodeComponentView.maxRunHistory + 3)",
+                       "run \(RunSessionStore.maxRunHistory + 3)",
                        "the cap must drop the oldest runs, never the newest")
     }
 
@@ -273,7 +273,7 @@ final class RunnableCodeBlockTests: XCTestCase {
             - CardChrome.headerHeight - insets.bodyTop - insets.bodyBottom
         let line = TextComponentView.height(
             of: RunOutputPanel.liveText("x", metrics: metrics), width: 1000)
-        XCTAssertLessThanOrEqual(body, CodeComponentView.maxOutputTextHeight)
+        XCTAssertLessThanOrEqual(body, RunOutputPanel.maxOutputTextHeight)
         XCTAssertEqual(body.truncatingRemainder(dividingBy: line), 0,
                        "a viewport of 13½ lines shows half a string at its edge")
     }
@@ -375,7 +375,7 @@ final class RunnableCodeBlockTests: XCTestCase {
         let fullHeight = settled.outputPanelHeight(width: width)
         XCTAssertGreaterThan(fullHeight, 0)
 
-        CodeComponentView.outputRevealDuration = 0.25
+        RunOutputPanel.revealDuration = 0.25
         let host = RecordingHost()
         let card = CodeComponentView(label: "bash", source: "x", language: "bash",
                                      lines: lines("x"), metrics: metrics, host: host)
@@ -397,13 +397,13 @@ final class RunnableCodeBlockTests: XCTestCase {
     }
 
     func testFailureOutputNamesTheExitStatus() {
-        let text = CodeComponentView.outputText(
+        let text = RunOutputPanel.outputText(
             ProcessRunner.Output(status: 3, outputText: "out", errorText: "err"),
             metrics: metrics).string
         XCTAssertTrue(text.hasPrefix("exit 3"), "a failure must lead with its exit status")
         XCTAssertTrue(text.contains("out") && text.contains("err"))
 
-        let silent = CodeComponentView.outputText(
+        let silent = RunOutputPanel.outputText(
             ProcessRunner.Output(status: 0, outputText: "", errorText: ""),
             metrics: metrics).string
         XCTAssertEqual(silent, "(no output)",
