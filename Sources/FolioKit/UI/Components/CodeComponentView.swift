@@ -2,13 +2,17 @@ import AppKit
 
 /// A fenced code block: a headered card with a copy button and selectable, highlighted source.
 /// A block fenced as a shell language (`bash`, `sh`, `shell`, `zsh`) also gets a Run button
-/// that executes the source at the document's project root. Every run gets a console of its
-/// own under the code — newest on top, each with its own timestamp and close button — so one
-/// result can be dismissed without losing the others.
+/// that executes the source at the document's project root. The block keeps **one** console
+/// under the code — stamped with the run's time, with its own close button — and re-running
+/// replaces it rather than stacking a second one.
 ///
-/// A run's state lives in a `RunSession`, not in this view: the card renders the sessions of
+/// The Run button is out while any block in the document is running: runs are serial, so a
+/// reader working through a page of commands runs them one at a time instead of racing two
+/// of them at the same project root.
+///
+/// A run's state lives in a `RunSession`, not in this view: the card renders the session of
 /// its block's key out of a `RunSessionStore`, and any other card bound to the same key — the
-/// same block shown in a peek card, say — shows the same consoles, live. An unbound card owns
+/// same block shown in a peek card, say — shows the same console, live. An unbound card owns
 /// a private store, which is the same machinery with one subscriber.
 ///
 /// The card used to be painted *behind* the text by a chain of custom layout fragments, one per
@@ -34,17 +38,17 @@ public final class CodeComponentView: HeaderedCardView {
     private(set) var sessionStore: RunSessionStore
     private var storeToken: UUID?
 
-    /// One console per session, newest first. Re-running stacks a new console on top; each
-    /// closes on its own. The card view is retained across scrolling, and the sessions outlive
-    /// even the view — a card recreated over the same store adopts them back.
-    private(set) var runPanels: [RunOutputPanel] = []
-    /// The finished-run history, newest first. Consoles still running have no entry yet.
-    var runEntries: [RunSession.Entry] { runPanels.compactMap(\.entry) }
-    /// The most recent finished result — nil while no console has finished.
-    var runOutput: ProcessRunner.Output? { runPanels.compactMap(\.entry).first?.output }
+    /// The block's console, or nil when it has none. The card view is retained across
+    /// scrolling, and the session outlives even the view — a card recreated over the same
+    /// store adopts its console back.
+    private(set) var runPanel: RunOutputPanel?
+    /// The finished run — nil while the console is still running, or has none.
+    var runEntry: RunSession.Entry? { runPanel?.entry }
+    /// The finished result — nil while the console has not finished.
+    var runOutput: ProcessRunner.Output? { runPanel?.entry?.output }
 
-    /// Breathing room between the code card and the first console, and between consoles —
-    /// they are separate cards, not extensions of the code card.
+    /// Breathing room between the code card and the console — a separate card, not an
+    /// extension of the code card.
     static let consoleGap: CGFloat = 8
 
     public override var cardFillColor: NSColor { Ink.codeBackground }
@@ -83,48 +87,69 @@ public final class CodeComponentView: HeaderedCardView {
         if let storeToken { sessionStore.removeObserver(storeToken) }
     }
 
-    /// Points the card at its block's shared history. Called by the document stack right after
-    /// construction; existing sessions are adopted — their consoles appear already settled, no
-    /// unfold — and the host is told once so the page makes room for them.
+    /// Points the card at its block's shared console. Called by the document stack right after
+    /// construction; an existing session is adopted — its console appears already settled, no
+    /// unfold — and the host is told once so the page makes room for it.
     func bindRunSessions(key: RunBlockKey, store: RunSessionStore) {
         if let storeToken { sessionStore.removeObserver(storeToken) }
-        for panel in runPanels { panel.removeFromSuperview() }
-        runPanels = []
+        runPanel?.detach()
+        runPanel = nil
 
         runKey = key
         sessionStore = store
         storeToken = store.addObserver { [weak self] key in
             self?.storeChanged(key)
         }
+        syncRunButton()
 
-        let existing = store.sessions(for: key)
-        guard !existing.isEmpty else { return }
-        for session in existing {
-            let panel = makePanel(for: session)
-            runPanels.append(panel)
-            addSubview(panel)
-            panel.revealInstantly()
-        }
+        guard let session = store.session(for: key) else { return }
+        let panel = makePanel(for: session)
+        runPanel = panel
+        addSubview(panel)
+        panel.revealInstantly()
         setAccessibilityLabel(accessibilityBaseLabel + ", with command output")
         needsLayout = true
         host?.blockHeightDidChange(self)
     }
 
-    /// The store changed shape under this block's key: a session began somewhere — here, or in
-    /// another card bound to the same block. Consoles it lost fold away through their own
-    /// `.closed` events; only arrivals are handled here, and they unfold, because this view is
-    /// witnessing the run begin.
+    /// A session began, finished, or closed somewhere in the document — here, or in another
+    /// card bound to the same store. The console follows this block's own key; the Run button
+    /// follows every key, since one running block is what puts all of them out.
     private func storeChanged(_ key: RunBlockKey) {
-        guard key == runKey else { return }
-        let sessions = sessionStore.sessions(for: runKey)
-        for session in sessions
-        where !runPanels.contains(where: { $0.session === session }) {
-            let panel = makePanel(for: session)
-            runPanels.insert(panel, at: 0)
-            addSubview(panel)
-            setAccessibilityLabel(accessibilityBaseLabel + ", with command output")
-            panel.unfold()
-        }
+        if key == runKey { syncConsole() }
+        syncRunButton()
+    }
+
+    /// Brings the console into line with the block's session. A console the store no longer
+    /// has folds away through its own `.closed` event, so only arrivals are handled here: the
+    /// first one unfolds, because this view is witnessing the run begin, while one replacing a
+    /// previous run takes its slot outright — the console resets rather than collapsing and
+    /// growing back.
+    private func syncConsole() {
+        guard let session = sessionStore.session(for: runKey),
+              runPanel?.session !== session else { return }
+        let replaced = runPanel
+        replaced?.detach()
+
+        let panel = makePanel(for: session)
+        runPanel = panel
+        addSubview(panel)
+        setAccessibilityLabel(accessibilityBaseLabel + ", with command output")
+        guard replaced != nil else { return panel.unfold() }
+        panel.revealInstantly()
+        needsLayout = true
+        host?.blockHeightDidChange(self)
+    }
+
+    /// Runs are serial, so the button is out from the moment any block in the document starts
+    /// until it exits — including this one's, which is what makes a second click impossible
+    /// rather than merely ignored.
+    private func syncRunButton() {
+        guard let runButton else { return }
+        let busy = sessionStore.isRunning
+        runButton.isEnabled = !busy
+        runButton.contentTintColor = busy ? Ink.decorative : Ink.tertiary
+        runButton.toolTip = busy ? "A command is already running" : "Run"
     }
 
     private func makePanel(for session: RunSession) -> RunOutputPanel {
@@ -136,9 +161,10 @@ public final class CodeComponentView: HeaderedCardView {
         }
         panel.onClose = { [weak self] panel in
             guard let self else { return }
-            runPanels.removeAll { $0 === panel }
             panel.removeFromSuperview()
-            if runPanels.isEmpty { setAccessibilityLabel(accessibilityBaseLabel) }
+            guard runPanel === panel else { return }
+            runPanel = nil
+            setAccessibilityLabel(accessibilityBaseLabel)
         }
         return panel
     }
@@ -179,9 +205,9 @@ public final class CodeComponentView: HeaderedCardView {
     public override func layout() {
         super.layout()
         let insets = metrics.codeCardInsets
-        // With consoles below, the code's height comes from its own text rather than from
+        // With a console below, the code's height comes from its own text rather than from
         // what remains of the card.
-        let codeHeight = runPanels.isEmpty
+        let codeHeight = runPanel == nil
             ? bounds.height - CardChrome.headerHeight - insets.bodyTop - insets.bodyBottom
             : codeTextHeight(width: max(1, bounds.width))
         body.frame = NSRect(
@@ -191,37 +217,37 @@ public final class CodeComponentView: HeaderedCardView {
             height: max(1, codeHeight)
         )
 
-        // The consoles are separate cards stacked below the code card, newest first, each
-        // preceded by a gap. Gap and card height both scale with the panel's reveal, so a
-        // console mid-unfold pushes everything below it down smoothly.
-        var top = body.frame.maxY + insets.bodyBottom
-        for panel in runPanels {
-            top += (Self.consoleGap * panel.reveal).rounded()
-            let height = panel.revealedHeight(width: bounds.width)
-            panel.frame = NSRect(x: 0, y: top, width: max(1, bounds.width), height: height)
-            top += height
-        }
+        // The console is a separate card below the code card, preceded by a gap. Gap and card
+        // height both scale with the panel's reveal, so a console mid-unfold pushes everything
+        // below it down smoothly. Once it has unfolded neither number moves again.
+        guard let panel = runPanel else { return }
+        let top = body.frame.maxY + insets.bodyBottom
+            + (Self.consoleGap * panel.reveal).rounded()
+        panel.frame = NSRect(x: 0, y: top, width: max(1, bounds.width),
+                             height: panel.revealedHeight)
     }
 
-    /// The code card's chrome ends at the code; the consoles below draw their own cards.
+    /// The code card's chrome ends at the code; the console below draws its own card.
     public override var cardRect: NSRect {
-        guard !runPanels.isEmpty else { return bounds }
+        guard runPanel != nil else { return bounds }
         let insets = metrics.codeCardInsets
         return NSRect(x: 0, y: 0, width: bounds.width,
                       height: CardChrome.headerHeight + insets.bodyTop
                           + codeTextHeight(width: max(1, bounds.width)) + insets.bodyBottom)
     }
 
-    /// The click itself is the consent: the source is right there in the card. The button is
-    /// never blocked — a run's whole lifecycle lives in its console, which appears immediately
-    /// as a live pty view, and another click simply opens another console.
+    /// The click itself is the consent: the source is right there in the card. A run's whole
+    /// lifecycle lives in its console, which appears immediately as a live pty view and
+    /// replaces whatever the block showed before.
+    ///
+    /// The store refuses while another run is in flight — the button is already out by then,
+    /// so this only catches a click that raced the disable.
     ///
     /// The run writes into its session, never into a view: the console — every console bound
     /// to the session, on whatever surface — follows along by observing it, and a view that
     /// dies mid-run cannot strand the result.
     @objc private func runSource() {
-        guard let host else { return }
-        let session = sessionStore.begin(key: runKey)
+        guard let host, let session = sessionStore.begin(key: runKey) else { return }
         host.blockRequestsRun(
             source,
             onOutput: { session.appendOutput($0) },
@@ -229,35 +255,26 @@ public final class CodeComponentView: HeaderedCardView {
         )
     }
 
-    // MARK: Run consoles
-
-    /// Opens a console in its running state — spinner up, stamped with the start time — and
-    /// unfolds it. The caller finishes it with the result when the command exits. The store's
-    /// observers run synchronously, so the panel exists by the time `begin` returns.
-    @discardableResult
-    func beginRunConsole() -> RunOutputPanel {
-        sessionStore.begin(key: runKey)
-        return runPanels[0]
-    }
+    // MARK: The run console
 
     /// A console that arrives already finished — the test seam, and the shape `runSource`
     /// produces once its command exits.
     func showRunOutput(_ result: ProcessRunner.Output) {
-        sessionStore.begin(key: runKey).finish(with: result)
+        sessionStore.begin(key: runKey)?.finish(with: result)
     }
 
     private var accessibilityBaseLabel: String {
         "\(headerLabel.stringValue) code"
     }
 
-    /// What the consoles add to the component's height at `width` — each panel's gap and
-    /// revealed card, so a console mid-unfold contributes exactly what it shows.
-    /// `DocumentStackView` adds this to the static code height when it measures the component,
-    /// which is what makes an unfold or a close move the page.
-    func outputPanelHeight(width: CGFloat) -> CGFloat {
-        runPanels.reduce(0) {
-            $0 + (Self.consoleGap * $1.reveal).rounded() + $1.revealedHeight(width: width)
-        }
+    /// What the console adds to the component's height — its gap and revealed card, so a
+    /// console mid-unfold contributes exactly what it shows. `DocumentStackView` adds this to
+    /// the static code height when it measures the component, which is what makes an unfold or
+    /// a close move the page. Nothing else does: a settled console reports the same number for
+    /// the rest of its life, whatever the command goes on to print.
+    var outputPanelHeight: CGFloat {
+        guard let panel = runPanel else { return 0 }
+        return (Self.consoleGap * panel.reveal).rounded() + panel.revealedHeight
     }
 
     @objc private func copySource() {
@@ -287,7 +304,7 @@ public final class CodeComponentView: HeaderedCardView {
         return CGSize(width: width,
                       height: CardChrome.headerHeight + insets.bodyTop
                           + codeTextHeight(width: max(1, width)) + insets.bodyBottom
-                          + outputPanelHeight(width: width))
+                          + outputPanelHeight)
     }
 }
 

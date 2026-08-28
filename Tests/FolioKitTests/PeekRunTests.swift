@@ -207,9 +207,10 @@ final class PeekRunTests: XCTestCase {
         XCTAssertTrue(peekCard !== mainCard)
 
         click(try XCTUnwrap(peekCard.runButton))
-        XCTAssertEqual(mainCard.runPanels.count, 1,
-                       "the run must open a console on the reading pane's block at once")
-        XCTAssertTrue(mainCard.runPanels[0].isRunning)
+        let console = try XCTUnwrap(
+            mainCard.runPanel,
+            "the run must open a console on the reading pane's block at once")
+        XCTAssertTrue(console.isRunning)
 
         XCTAssertTrue(waitUntil { mainCard.runOutput != nil },
                       "the result must land on the reading pane's block")
@@ -220,10 +221,10 @@ final class PeekRunTests: XCTestCase {
 
         // Closing the console from the reading pane closes it in the card too — it is the
         // same run.
-        click(mainCard.runPanels[0].closeButton)
-        XCTAssertTrue(peekCard.runPanels.isEmpty,
-                      "one close must fold the console on every surface")
-        XCTAssertTrue(view.runSessions.sessions(for: peekCard.runKey).isEmpty)
+        click(console.closeButton)
+        XCTAssertNil(peekCard.runPanel,
+                     "one close must fold the console on every surface")
+        XCTAssertNil(view.runSessions.session(for: peekCard.runKey))
 
         view.linkPeek.hide()
         waitUntil(2) { (window.childWindows ?? []).isEmpty }
@@ -236,7 +237,7 @@ final class PeekRunTests: XCTestCase {
         let mainCard = try mainCodeCard(in: view)
 
         click(try XCTUnwrap(peekCard.runButton))
-        XCTAssertTrue(mainCard.runPanels.first?.isRunning == true)
+        XCTAssertTrue(mainCard.runPanel?.isRunning == true)
 
         // The reader moves on while the command is still running: the card goes, the run
         // does not.
@@ -284,16 +285,16 @@ final class PeekRunTests: XCTestCase {
         XCTAssertEqual(path(of: try XCTUnwrap(card.runOutput)),
                        sub.resolvingSymlinksInPath().path,
                        "a cross-file peek must run at the target's root, not the pane's")
-        XCTAssertTrue(view.runSessions.sessions(for: card.runKey).isEmpty,
-                      "a cross-file run must not land in the pane's store")
+        XCTAssertNil(view.runSessions.session(for: card.runKey),
+                     "a cross-file run must not land in the pane's store")
 
         view.linkPeek.hide()
         XCTAssertTrue(waitUntil(2) { (window.childWindows ?? []).isEmpty })
 
         // Peeked again, the block starts clean: nothing persisted with the throwaway store.
         let again = try hoverPeek(on: "sub/Notes.md", view: view, window: window)
-        XCTAssertTrue(try peekCodeCard(in: again).runPanels.isEmpty,
-                      "a cross-file peek's consoles must not outlive the card")
+        XCTAssertNil(try peekCodeCard(in: again).runPanel,
+                     "a cross-file peek's console must not outlive the card")
         view.linkPeek.hide()
         waitUntil(2) { (window.childWindows ?? []).isEmpty }
     }
@@ -313,8 +314,8 @@ final class PeekRunTests: XCTestCase {
 
         let fresh = try mainCodeCard(in: view)
         XCTAssertTrue(fresh !== card, "the re-render must have made a new card")
-        XCTAssertEqual(fresh.runEntries.count, 1,
-                       "the fresh card must adopt the surviving console")
+        XCTAssertNotNil(fresh.runEntry,
+                        "the fresh card must adopt the surviving console")
         XCTAssertEqual(fresh.runOutput?.outputText, output.outputText)
     }
 }

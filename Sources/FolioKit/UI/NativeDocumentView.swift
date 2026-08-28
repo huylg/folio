@@ -37,9 +37,9 @@ public final class NativeDocumentView: NSView {
     public let diagramLayouts = DiagramLayoutCache()
     public var pendingWorkCount = 0
 
-    /// The current document's run history: one session per run, keyed by block. Shared with
-    /// any peek card previewing this same document, which is what makes a run started in the
-    /// card appear on the block here — and the block's past runs appear in the card.
+    /// The current document's consoles: one session per block, and one run at a time. Shared
+    /// with any peek card previewing this same document, which is what makes a run started in
+    /// the card appear on the block here — and the block's console appear in the card.
     public let runSessions = RunSessionStore()
     private var runSessionsToken: UUID?
 

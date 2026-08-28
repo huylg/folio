@@ -55,7 +55,7 @@ public class BlockCardView: NSView, DimmableComponent {
     open var cardBorderColor: NSColor { Ink.hairline }
 
     /// Where the card's chrome is drawn — the whole view by default. A subclass whose view
-    /// holds more than the card itself (a code card with run consoles below it) narrows this
+    /// holds more than the card itself (a code card with a run console below it) narrows this
     /// so the rounded rect ends where the card does.
     open var cardRect: NSRect { bounds }
 
