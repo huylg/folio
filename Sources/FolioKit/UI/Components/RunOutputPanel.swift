@@ -288,11 +288,14 @@ final class RunOutputPanel: HeaderedCardView {
 
     /// A transcript as attributed text, one run at a time — the same mono face throughout,
     /// with each run's own colors, weight, and decoration.
+    ///
+    /// The row the cursor is parked on is not drawn: it is where the *next* line will go, not
+    /// a line of output, and rendering it hangs an empty row off the foot of the console.
     static func liveText(_ transcript: TerminalSnapshot,
                          metrics: DocumentMetrics) -> NSAttributedString {
         let size = pointSize(metrics: metrics)
         let out = NSMutableAttributedString()
-        for (index, line) in transcript.lines.enumerated() {
+        for (index, line) in transcript.droppingCursorLine().lines.enumerated() {
             if index > 0 {
                 // The newline carries plain attributes: a line ending inside a background
                 // color would otherwise paint that color out to the edge of the console.

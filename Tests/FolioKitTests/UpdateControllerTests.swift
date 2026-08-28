@@ -56,11 +56,21 @@ final class UpdateControllerTests: XCTestCase {
                          })
     }
 
-    /// `check` hops to the main queue to settle, so let the run loop turn before asserting.
+    /// `check` hops to the main queue to publish its state, so let that hop happen before
+    /// asserting on it.
+    ///
+    /// Waits for a block posted *behind* the controller's own rather than turning the run loop
+    /// for a fixed 10ms: the stub feed answers synchronously from inside `check`, so its hop is
+    /// already queued by the time this is called, and the main queue is FIFO. One fixed turn of
+    /// the loop was a coin flip on a loaded machine — it is what left CI asserting on a
+    /// controller still reading `.checking`.
     private func settle() {
-        let deadline = Date().addingTimeInterval(1)
-        RunLoop.current.run(until: Date().addingTimeInterval(0.01))
-        _ = deadline
+        var drained = false
+        DispatchQueue.main.async { drained = true }
+        let deadline = Date().addingTimeInterval(2)
+        while !drained, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
     }
 
     // MARK: The check
