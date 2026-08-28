@@ -55,21 +55,44 @@ public enum LinkRouter {
             return fragment.map { LinkTarget.fragment($0) } ?? .missing(destination)
         }
 
-        let url: URL
+        // Agent plans link with a line suffix — "[voucher.py:1043](src/voucher.py:1043)" —
+        // which names the file, not a file with a colon. The literal path is tried first,
+        // since a filename may genuinely contain a colon.
+        guard let url = locate(path, base: base, root: root)
+                ?? strippingLineSuffix(path).flatMap({ locate($0, base: base, root: root) })
+        else {
+            return .missing(destination)
+        }
+        return isMarkdownFile(url) ? .markdown(url, fragment: fragment) : .file(url)
+    }
+
+    /// The existing file `path` names, or nil.
+    private static func locate(_ path: String, base: URL, root: URL?) -> URL? {
         if path.hasPrefix("/"), let root {
             var trimmed = path
             // "//x" must not fall back to filesystem-absolute and escape the root.
             while trimmed.hasPrefix("/") { trimmed.removeFirst() }
-            url = trimmed.isEmpty
+            let url = trimmed.isEmpty
                 ? root.standardizedFileURL
                 : URL(fileURLWithPath: trimmed, relativeTo: root).standardizedFileURL
-        } else {
-            url = URL(fileURLWithPath: path, relativeTo: base).standardizedFileURL
+            return FileManager.default.fileExists(atPath: url.path) ? url : nil
         }
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            return .missing(destination)
+        let atBase = URL(fileURLWithPath: path, relativeTo: base).standardizedFileURL
+        if FileManager.default.fileExists(atPath: atBase.path) { return atBase }
+        // A relative destination missing beside the document may still name a file from the
+        // root — documents that live outside the tree they describe (an agent's plan in
+        // `~/.claude/plans`) write their paths root-relative.
+        if let root {
+            let atRoot = URL(fileURLWithPath: path, relativeTo: root).standardizedFileURL
+            if FileManager.default.fileExists(atPath: atRoot.path) { return atRoot }
         }
-        return isMarkdownFile(url) ? .markdown(url, fragment: fragment) : .file(url)
+        return nil
+    }
+
+    private static func strippingLineSuffix(_ path: String) -> String? {
+        guard let suffix = path.range(of: #":[0-9]+(:[0-9]+)?$"#, options: .regularExpression)
+        else { return nil }
+        return String(path[..<suffix.lowerBound])
     }
 
     /// Splits a trailing `#fragment`, ignoring a `#` that is part of the filename itself only
