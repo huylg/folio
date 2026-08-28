@@ -33,14 +33,13 @@ public final class RunSession {
         case closed
     }
 
-    /// A finished run, timestamped so an older console's header can say when it was.
+    /// A finished run. The result alone: a console shows the latest run and says so in its
+    /// body, so there is nothing for a timestamp to disambiguate.
     public struct Entry {
         public let output: ProcessRunner.Output
-        public let finishedAt: Date
     }
 
     public let key: RunBlockKey
-    public let startedAt: Date
     /// What the pty has produced so far — the live body until the command exits, and still
     /// readable after, since the result's text is derived from the same stream.
     public private(set) var liveTranscript: TerminalSnapshot = .empty
@@ -51,9 +50,8 @@ public final class RunSession {
 
     private var observers: [UUID: (Event) -> Void] = [:]
 
-    init(key: RunBlockKey, startedAt: Date = Date()) {
+    init(key: RunBlockKey) {
         self.key = key
-        self.startedAt = startedAt
     }
 
     /// Registers `handler` for the session's events, synchronously on the main thread.
@@ -85,7 +83,7 @@ public final class RunSession {
             close()
             return
         }
-        entry = Entry(output: output, finishedAt: Date())
+        entry = Entry(output: output)
         notify(.finished)
     }
 
@@ -160,9 +158,9 @@ public final class RunSessionStore {
     /// notified synchronously, so a view bound to the key has its console up by the time this
     /// returns.
     @discardableResult
-    public func begin(key: RunBlockKey, startedAt: Date = Date()) -> RunSession? {
+    public func begin(key: RunBlockKey) -> RunSession? {
         guard !isRunning else { return nil }
-        let session = RunSession(key: key, startedAt: startedAt)
+        let session = RunSession(key: key)
         watch(session)
         // Installed *before* the old one is closed: closing re-enters through `watch`'s
         // observer, and a view reacting to that must already see the session taking its place.

@@ -307,6 +307,23 @@ final class RunnableCodeBlockTests: XCTestCase {
                        "settling into the logged result — exit line and all — moves nothing")
     }
 
+    /// The console's header names what the card is, the way the code card above it names a
+    /// language. It used to carry the run's start time, which only earned its place back when a
+    /// block stacked a console per run and a reader needed to tell them apart.
+    func testTheConsoleHeaderIsLabelledConsole() throws {
+        let host = RecordingHost()
+        let card = CodeComponentView(label: "bash", source: "date", language: "bash",
+                                     lines: lines("date"), metrics: metrics, host: host)
+        click(try XCTUnwrap(card.runButton))
+        XCTAssertEqual(try XCTUnwrap(card.runPanel).headerLabel.stringValue, "console",
+                       "a running console names itself")
+
+        host.finishPendingRuns(with: ProcessRunner.Output(status: 0, outputText: "now",
+                                                          errorText: ""))
+        XCTAssertEqual(try XCTUnwrap(card.runPanel).headerLabel.stringValue, "console",
+                       "and still does once the command has exited")
+    }
+
     /// A block keeps one console. Running it again replaces what is there rather than
     /// stacking a second card under the code, so the page cannot grow a log of old runs.
     func testARerunReplacesTheBlocksConsole() throws {

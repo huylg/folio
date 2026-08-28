@@ -1,9 +1,14 @@
 import AppKit
 
 /// One run's console: a card of its own below the code card — the same headered-card chrome,
-/// with the run's start time as the label, its own close button, and the transcript scrolling
-/// inside it. A block shows one at a time: it unfolds on arrival, folds away when closed, and
-/// is replaced outright when the block is run again.
+/// labelled `console`, with its own close button and the transcript scrolling inside it. A
+/// block shows one at a time: it unfolds on arrival, folds away when closed, and is replaced
+/// outright when the block is run again.
+///
+/// The header used to carry the run's start time. That was worth saying when a block stacked a
+/// console per run and the stamp was how a reader told them apart; with one console, always
+/// the latest run, it named a moment nobody needed — and read as data on a strip where the
+/// code card above it simply names a language.
 ///
 /// **The console is a fixed size.** It opens at its full height and stays there — output
 /// scrolls inside it, and neither a chatty command, a finishing one, nor a re-run moves it by
@@ -63,7 +68,7 @@ final class RunOutputPanel: HeaderedCardView {
 
     init(session: RunSession, metrics: DocumentMetrics) {
         self.session = session
-        super.init(metrics: metrics, label: Self.timeFormatter.string(from: session.startedAt))
+        super.init(metrics: metrics, label: "console")
         // The owning card frames every console from its own `layout()`, so the frame must be
         // the authority here — the same as the code body's. Left constraint-driven, the panel
         // has no constraints of its own, so Auto Layout solves its header against the card's
@@ -106,13 +111,13 @@ final class RunOutputPanel: HeaderedCardView {
         if let entry = session.entry {
             textView.configure(with: Self.outputText(entry.output, metrics: metrics),
                                kind: .paragraph)
-            setAccessibilityLabel("Command output from \(headerLabel.stringValue)")
+            setAccessibilityLabel("Command output")
         } else {
             if !session.liveTranscript.isEmpty {
                 textView.configure(with: Self.liveText(session.liveTranscript,
                                                        metrics: metrics), kind: .paragraph)
             }
-            setAccessibilityLabel("Command running since \(headerLabel.stringValue)")
+            setAccessibilityLabel("Command running")
         }
 
         sessionToken = session.addObserver { [weak self] event in
@@ -174,7 +179,7 @@ final class RunOutputPanel: HeaderedCardView {
         spinner.removeFromSuperview()
         textView.configure(with: Self.outputText(entry.output, metrics: metrics),
                            kind: .paragraph)
-        setAccessibilityLabel("Command output from \(headerLabel.stringValue)")
+        setAccessibilityLabel("Command output")
         needsLayout = true
         onHeightChange?()
     }
@@ -593,11 +598,6 @@ final class RunOutputPanel: HeaderedCardView {
         RunLoop.main.add(timer, forMode: .common)
     }
 
-    private static let timeFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
-        return formatter
-    }()
 }
 
 extension RunSessionStore {
