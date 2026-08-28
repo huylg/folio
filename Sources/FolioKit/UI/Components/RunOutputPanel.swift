@@ -1,9 +1,16 @@
 import AppKit
 
 /// One run's console: a card of its own below the code card — the same headered-card chrome,
-/// with the run's start time as the label, its own close button, and the result text,
-/// scrollable past the cap. Each console unfolds on arrival and folds away when closed,
-/// independently of its siblings.
+/// with the run's start time as the label, its own close button, and the transcript scrolling
+/// inside it. A block shows one at a time: it unfolds on arrival, folds away when closed, and
+/// is replaced outright when the block is run again.
+///
+/// **The console is a fixed size.** It opens at its full height and stays there — output
+/// scrolls inside it, and neither a chatty command, a finishing one, nor a re-run moves it by
+/// a point. Sized to its content it danced: every tick of a live transcript grew it, the exit
+/// resized it again, and a reader clicking Run twice watched the page shuffle under the
+/// pointer. A terminal pane does not resize itself as things are printed into it, and neither
+/// does this.
 ///
 /// A view over a `RunSession`, never the run's owner: the session holds the transcript and the
 /// result, and every console bound to it — the reading pane's, a peek card's — renders the same
@@ -39,12 +46,15 @@ final class RunOutputPanel: HeaderedCardView {
     private let textView = TextComponentView()
     private let spinner = NSProgressIndicator()
 
-    /// A console's text scrolls internally past this, so one chatty command cannot turn the
-    /// page into its log.
-    static let maxOutputTextHeight: CGFloat = 220
-    /// The body never collapses below one row, so a console that has printed nothing yet is
-    /// still visibly a console.
-    static let minimumBodyHeight: CGFloat = 16
+    /// How many rows of output the console shows. Not a cap — it is always exactly this many:
+    /// an empty console reserves them, and a chatty one scrolls inside them rather than turning
+    /// the page into its log.
+    ///
+    /// Counted in rows rather than points because a console is a window onto a transcript, and
+    /// what a reader wants from it is a stable number of *lines* — so it tracks the type ramp,
+    /// showing the same eight lines whatever size the page is set at, instead of shedding rows
+    /// as the text grows.
+    static let outputRows = 8
     /// How long a console takes to unfold or fold away. A `static var` so tests can zero it
     /// and assert on final geometry.
     static var revealDuration: TimeInterval = 0.22
@@ -154,36 +164,19 @@ final class RunOutputPanel: HeaderedCardView {
     private var pinTailAfterLayout = false
 
     /// The command exited: the live view settles into the logged result — same body, plus the
-    /// exit line when it failed. The console eases from its live height to the result's height
-    /// by re-entering the reveal from the ratio of the two, so the change is animated rather
-    /// than a jump.
+    /// exit line when it failed. The console's height does not move for it, so this is a
+    /// re-render inside a frame that is already the right size.
     private func sessionFinished() {
         guard let entry = session.entry else { return }
-        let width = max(1, bounds.width)
-        // The session already holds the result, so the pre-finish height is derived from the
-        // transcript the live view was showing a moment ago.
-        let runningHeight = Self.settledHeight(
-            bodyText: Self.liveText(session.liveTranscript, metrics: metrics),
-            width: width, metrics: metrics)
-
+        pinTailAfterLayout = isScrolledToTail
         invalidateBodyCache()
         spinner.stopAnimation(nil)
         spinner.removeFromSuperview()
         textView.configure(with: Self.outputText(entry.output, metrics: metrics),
                            kind: .paragraph)
         setAccessibilityLabel("Command output from \(headerLabel.stringValue)")
-
-        let finishedHeight = fullHeight(width: width)
-        if reveal >= 1, finishedHeight > 0, runningHeight != finishedHeight,
-           Self.revealDuration > 0 {
-            reveal = runningHeight / finishedHeight
-            animateReveal(to: 1)
-        } else {
-            // Mid-unfold (or animations off): the running reveal continues into the new
-            // height on its own — revealed height is always a fraction of the current full.
-            needsLayout = true
-            onHeightChange?()
-        }
+        needsLayout = true
+        onHeightChange?()
     }
 
     /// The current body text: the logged result once finished, the raw pty transcript before.
@@ -402,62 +395,34 @@ final class RunOutputPanel: HeaderedCardView {
         return advance
     }
 
-    func fullHeight(width: CGFloat) -> CGFloat {
-        Self.settledHeight(contentSize: contentSize, width: width, metrics: metrics)
-    }
+    /// The console's settled (reveal = 1) height. A constant of the metrics — not of the
+    /// transcript, not of the width — which is what makes output unable to move the page.
+    var fullHeight: CGFloat { Self.settledHeight(metrics: metrics) }
 
-    /// A console's full (settled, reveal = 1) height for `bodyText` at `width`. Static so a
-    /// session store can answer the stack's measure pass for a block whose card has never
-    /// been created.
-    static func settledHeight(bodyText: NSAttributedString, width: CGFloat,
-                              metrics: DocumentMetrics) -> CGFloat {
-        settledHeight(contentSize: TextMeasurer.shared.size(of: bodyText,
-                                                            width: unwrappedMeasureWidth),
-                      width: width, metrics: metrics)
-    }
-
-    /// The same, for a caller that already has the transcript's laid-out size — the panel
-    /// itself, which caches it rather than re-running TextKit on every pass.
-    static func settledHeight(contentSize: NSSize, width: CGFloat,
-                              metrics: DocumentMetrics) -> CGFloat {
+    /// The same, for a caller with no panel: the session store answers the stack's measure
+    /// pass this way for a block whose card has never been created.
+    static func settledHeight(metrics: DocumentMetrics) -> CGFloat {
         let insets = metrics.codeCardInsets
-        return CardChrome.headerHeight + insets.bodyTop
-            + scrollViewportHeight(forContent: contentSize, panelWidth: width,
-                                   metrics: metrics)
+        return CardChrome.headerHeight + insets.bodyTop + bodyHeight(metrics: metrics)
             + insets.bodyBottom
     }
 
-    /// The scroll view's height at `width`: the whole-line text area, plus the horizontal
-    /// bar's thickness when the widest line overflows sideways. Legacy bars are carved out of
-    /// the viewport, so a viewport sized to exactly the text would lose its last line to the
-    /// bar. Deterministic, because the console pins its scroller style.
-    private static func scrollViewportHeight(forContent content: NSSize,
-                                             panelWidth width: CGFloat,
-                                             metrics: DocumentMetrics) -> CGFloat {
-        let body = cappedBodyHeight(for: content.height, metrics: metrics)
-        let thickness = NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
-            .rounded(.up)
-        // A vertical bar narrows the text area, which can itself push a line into overflow.
-        let textArea = Self.textWidth(panelWidth: width, metrics: metrics)
-            - (content.height > body ? thickness : 0)
-        return body + (content.width > textArea ? thickness : 0)
+    /// The scroll view's height: `outputRows` whole rows. Whole, because a viewport 8½ rows
+    /// tall shows half a string at its edge no matter how correctly it is scrolled.
+    ///
+    /// A horizontal scroller, when the widest line needs one, is carved out of this rather
+    /// than added to it: legacy bars take their thickness from the viewport, and letting the
+    /// console grow to keep every row whole would be one more way for output to move the page.
+    /// What it costs is a part-row at the top of a scrolled-to-the-tail console, which is what
+    /// a terminal shows anyway.
+    static func bodyHeight(metrics: DocumentMetrics) -> CGFloat {
+        CGFloat(outputRows) * lineHeight(metrics: metrics)
     }
 
-    /// The text area's height for a body of `textHeight`: capped, and the cap rounded down to
-    /// whole lines — a viewport that is 13½ lines tall shows half a string at its edge no
-    /// matter how correctly it is scrolled.
-    private static func cappedBodyHeight(for textHeight: CGFloat,
-                                         metrics: DocumentMetrics) -> CGFloat {
-        guard textHeight > maxOutputTextHeight else {
-            return max(minimumBodyHeight, textHeight)
-        }
-        let line = lineHeight(metrics: metrics)
-        let whole = (maxOutputTextHeight / line).rounded(.down) * line
-        return max(minimumBodyHeight, whole)
-    }
-
-    func revealedHeight(width: CGFloat) -> CGFloat {
-        (fullHeight(width: width) * min(max(reveal, 0), 1)).rounded()
+    /// How much of the console its current reveal is showing. Only the unfold and the fold
+    /// away move this; once settled it is `fullHeight` for the console's whole life.
+    var revealedHeight: CGFloat {
+        (fullHeight * min(max(reveal, 0), 1)).rounded()
     }
 
     static func textWidth(panelWidth: CGFloat, metrics: DocumentMetrics) -> CGFloat {
@@ -473,17 +438,29 @@ final class RunOutputPanel: HeaderedCardView {
 
         let viewportWidth = Self.textWidth(panelWidth: width, metrics: metrics)
         let content = contentSize
-        // The document is as wide as its widest line; a narrower transcript still fills the
-        // viewport so selection and clicks behave across its whole width.
+        // The document is exactly as tall as its text: padded out to the viewport it would
+        // count as overflow the moment a horizontal bar carved a few points off the bottom,
+        // and a two-line transcript would grow a vertical scroller.
+        //
+        // Its width is the widest line, or the text area if that is wider so a narrow
+        // transcript still fills the console for selection and clicks. The text area is the
+        // viewport *less the vertical bar* when the transcript overflows downward: stretched
+        // to the full viewport instead, a tall transcript of short lines overflows sideways by
+        // exactly the vertical bar's thickness and summons a horizontal bar that has nothing
+        // to scroll — which then eats a row out of a console that can no longer grow to
+        // replace it.
+        let viewportHeight = Self.bodyHeight(metrics: metrics)
+        let thickness = NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
+            .rounded(.up)
+        let textArea = viewportWidth - (content.height > viewportHeight ? thickness : 0)
         textView.frame = NSRect(x: 0, y: 0,
-                                width: max(viewportWidth, content.width),
+                                width: max(textArea, content.width),
                                 height: max(1, content.height))
         scroll.frame = NSRect(
             x: gutter,
             y: CardChrome.headerHeight + insets.bodyTop,
             width: viewportWidth,
-            height: Self.scrollViewportHeight(forContent: content, panelWidth: width,
-                                              metrics: metrics)
+            height: viewportHeight
         )
         if pinTailAfterLayout {
             pinTailAfterLayout = false
@@ -497,7 +474,7 @@ final class RunOutputPanel: HeaderedCardView {
     }
 
     override func sizeThatFits(width: CGFloat) -> CGSize {
-        CGSize(width: width, height: fullHeight(width: width))
+        CGSize(width: width, height: fullHeight)
     }
 
     func unfold() { animateReveal(to: 1) }
@@ -510,6 +487,17 @@ final class RunOutputPanel: HeaderedCardView {
         reveal = 1
         alphaValue = 1
         needsLayout = true
+    }
+
+    /// Drops the console at once, with no fold and no further reports to its owner — the
+    /// replacement path, where a fresh run's console takes this one's slot under the code.
+    /// Anything still in flight on it (a reveal, a pending `.closed` fold) stops here.
+    func detach() {
+        revealTimer?.invalidate()
+        revealTimer = nil
+        onHeightChange = nil
+        onClose = nil
+        removeFromSuperview()
     }
 
     /// Folds the console away and hands it back to the owner — the session-closed path, and
@@ -613,17 +601,13 @@ final class RunOutputPanel: HeaderedCardView {
 }
 
 extension RunSessionStore {
-    /// What a block's consoles add to its code card's height at `width` — the measure the
-    /// document stack falls back on when the card's view has never been created, so a run
-    /// started from a peek still reserves its space on the page. Settled heights: a view that
-    /// exists answers with its own reveal-accurate `outputPanelHeight` instead.
-    func consoleHeight(for key: RunBlockKey, width: CGFloat,
-                       metrics: DocumentMetrics) -> CGFloat {
-        sessions(for: key).reduce(0) { total, session in
-            total + CodeComponentView.consoleGap
-                + RunOutputPanel.settledHeight(
-                    bodyText: RunOutputPanel.bodyText(for: session, metrics: metrics),
-                    width: width, metrics: metrics)
-        }
+    /// What a block's console adds to its code card's height — the measure the document stack
+    /// falls back on when the card's view has never been created, so a run started from a peek
+    /// still reserves its space on the page. A settled height: a view that exists answers with
+    /// its own reveal-accurate `outputPanelHeight` instead. It needs neither the transcript nor
+    /// the width, because a console's height depends on neither.
+    func consoleHeight(for key: RunBlockKey, metrics: DocumentMetrics) -> CGFloat {
+        guard session(for: key) != nil else { return 0 }
+        return CodeComponentView.consoleGap + RunOutputPanel.settledHeight(metrics: metrics)
     }
 }

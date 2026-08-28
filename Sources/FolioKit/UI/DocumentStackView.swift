@@ -700,12 +700,12 @@ public final class DocumentStackView: NSView {
                 let output: CGFloat
                 if let card = self.retained[RetainKey(component: index, rows: nil)]
                     as? CodeComponentView {
-                    output = card.outputPanelHeight(width: width)
+                    output = card.outputPanelHeight
                 } else if let context = self.runContext {
                     output = context.store.consoleHeight(
                         for: RunBlockKey(documentURL: context.documentURL,
                                          location: component.range.location),
-                        width: width, metrics: metrics)
+                        metrics: metrics)
                 } else {
                     output = 0
                 }

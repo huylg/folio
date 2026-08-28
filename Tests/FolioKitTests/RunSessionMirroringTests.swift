@@ -55,13 +55,15 @@ final class RunSessionMirroringTests: XCTestCase {
         click(try XCTUnwrap(a.runButton))
         XCTAssertEqual(hostA.ran, ["echo hi"], "the clicked view's host executes")
         XCTAssertTrue(hostB.ran.isEmpty, "the mirroring view must not execute a second time")
-        XCTAssertEqual(a.runPanels.count, 1)
-        XCTAssertEqual(b.runPanels.count, 1,
-                       "the same run must open a console in every bound view")
-        XCTAssertTrue(a.runPanels[0].isRunning)
-        XCTAssertTrue(b.runPanels[0].isRunning)
-        XCTAssertTrue(a.runPanels[0].session === b.runPanels[0].session,
+        let inA = try XCTUnwrap(a.runPanel)
+        let inB = try XCTUnwrap(b.runPanel,
+                                "the same run must open a console in every bound view")
+        XCTAssertTrue(inA.isRunning)
+        XCTAssertTrue(inB.isRunning)
+        XCTAssertTrue(inA.session === inB.session,
                       "both consoles must render the same session")
+        XCTAssertFalse(try XCTUnwrap(b.runButton).isEnabled,
+                       "the mirroring view's button goes out with the run")
     }
 
     func testLiveTranscriptFlowsToEveryBoundView() throws {
@@ -71,16 +73,18 @@ final class RunSessionMirroringTests: XCTestCase {
         let b = boundCard(host: RecordingHost(), store: store)
 
         click(try XCTUnwrap(a.runButton))
-        let empty = b.runPanels[0].fullHeight(width: width)
+        let inA = try XCTUnwrap(a.runPanel)
+        let inB = try XCTUnwrap(b.runPanel)
+        let empty = inB.fullHeight
         hostA.emitOutput("hello\nworld\n")
 
-        XCTAssertEqual(a.runPanels[0].liveTranscript.plainText, "hello\nworld\n")
-        XCTAssertEqual(b.runPanels[0].liveTranscript.plainText, "hello\nworld\n",
+        XCTAssertEqual(inA.liveTranscript.plainText, "hello\nworld\n")
+        XCTAssertEqual(inB.liveTranscript.plainText, "hello\nworld\n",
                        "live output must reach the view that did not start the run")
-        XCTAssertEqual(a.runPanels[0].fullHeight(width: width),
-                       b.runPanels[0].fullHeight(width: width),
-                       "both consoles must measure the same transcript alike")
-        XCTAssertGreaterThan(b.runPanels[0].fullHeight(width: width), empty)
+        XCTAssertEqual(inA.fullHeight, inB.fullHeight,
+                       "both consoles must measure alike")
+        XCTAssertEqual(inB.fullHeight, empty,
+                       "and output must not resize either of them")
     }
 
     func testFinishLandsInBoth() throws {
@@ -95,8 +99,8 @@ final class RunSessionMirroringTests: XCTestCase {
         XCTAssertEqual(a.runOutput?.outputText, "done")
         XCTAssertEqual(b.runOutput?.outputText, "done",
                        "the result must land in every bound view")
-        XCTAssertFalse(a.runPanels[0].isRunning)
-        XCTAssertFalse(b.runPanels[0].isRunning)
+        XCTAssertFalse(try XCTUnwrap(a.runPanel).isRunning)
+        XCTAssertFalse(try XCTUnwrap(b.runPanel).isRunning)
     }
 
     func testCloseInOneClosesEverywhere() throws {
@@ -105,15 +109,14 @@ final class RunSessionMirroringTests: XCTestCase {
         let b = boundCard(host: RecordingHost(), store: store)
 
         a.showRunOutput(ProcessRunner.Output(status: 0, outputText: "x", errorText: ""))
-        XCTAssertEqual(a.runPanels.count, 1)
-        XCTAssertEqual(b.runPanels.count, 1)
+        XCTAssertNotNil(a.runPanel)
+        let inB = try XCTUnwrap(b.runPanel)
 
-        click(b.runPanels[0].closeButton)
-        XCTAssertTrue(a.runPanels.isEmpty,
-                      "closing a console in one view must close it in the other")
-        XCTAssertTrue(b.runPanels.isEmpty)
-        XCTAssertTrue(store.sessions(for: key).isEmpty,
-                      "a closed session must leave the store")
+        click(inB.closeButton)
+        XCTAssertNil(a.runPanel,
+                     "closing a console in one view must close it in the other")
+        XCTAssertNil(b.runPanel)
+        XCTAssertNil(store.session(for: key), "a closed session must leave the store")
     }
 
     func testLateBindAdoptsSessionsWithoutUnfoldAnimation() throws {
@@ -126,32 +129,53 @@ final class RunSessionMirroringTests: XCTestCase {
         RunOutputPanel.revealDuration = 0.25
         let host = RecordingHost()
         let late = boundCard(host: host, store: store)
-        XCTAssertEqual(late.runPanels.count, 1)
-        XCTAssertGreaterThan(late.outputPanelHeight(width: width), 0,
+        XCTAssertNotNil(late.runPanel)
+        XCTAssertGreaterThan(late.outputPanelHeight, 0,
                              "an adopted console must arrive already revealed")
-        XCTAssertEqual(late.outputPanelHeight(width: width),
-                       a.outputPanelHeight(width: width),
+        XCTAssertEqual(late.outputPanelHeight, a.outputPanelHeight,
                        "and it must measure exactly like the settled original")
         XCTAssertEqual(host.heightChanges.count, 1,
                        "adoption must tell the host once, so the page makes room")
     }
 
-    func testSharedHistoryCapDropsOldestEverywhere() throws {
+    /// One block, one console — on every surface. A re-run in one view replaces the console
+    /// in the other too, rather than leaving it showing a result that is no longer the
+    /// block's.
+    func testARerunReplacesTheConsoleInEveryBoundView() throws {
         let store = RunSessionStore()
         let a = boundCard(host: RecordingHost(), store: store)
         let b = boundCard(host: RecordingHost(), store: store)
 
-        for run in 1...(RunSessionStore.maxRunHistory + 3) {
+        for run in 1...4 {
             a.showRunOutput(ProcessRunner.Output(status: 0, outputText: "run \(run)",
                                                  errorText: ""))
         }
-        XCTAssertEqual(a.runPanels.count, RunSessionStore.maxRunHistory)
-        XCTAssertEqual(b.runPanels.count, RunSessionStore.maxRunHistory,
-                       "the cap is the store's, so every view agrees")
-        XCTAssertEqual(b.runOutput?.outputText,
-                       "run \(RunSessionStore.maxRunHistory + 3)",
-                       "the cap must drop the oldest runs, never the newest")
-        XCTAssertEqual(store.sessions(for: key).count, RunSessionStore.maxRunHistory)
+        XCTAssertEqual(a.subviews.compactMap { $0 as? RunOutputPanel }.count, 1)
+        XCTAssertEqual(b.subviews.compactMap { $0 as? RunOutputPanel }.count, 1,
+                       "one console per block, on every surface")
+        XCTAssertEqual(a.runOutput?.outputText, "run 4")
+        XCTAssertEqual(b.runOutput?.outputText, "run 4",
+                       "the mirroring view must show the latest run, not an older one")
+        XCTAssertTrue(a.runPanel?.session === store.session(for: key))
+        XCTAssertTrue(b.runPanel?.session === store.session(for: key))
+    }
+
+    /// Runs are serial across the whole store: a second block cannot start while the first is
+    /// still going, whichever surface asks.
+    func testTheStoreRefusesASecondRunWhileOneIsInFlight() throws {
+        let store = RunSessionStore()
+        let other = RunBlockKey(documentURL: key.documentURL, location: key.location + 100)
+
+        let running = try XCTUnwrap(store.begin(key: key))
+        XCTAssertTrue(store.isRunning)
+        XCTAssertNil(store.begin(key: other), "a second block must not run in parallel")
+        XCTAssertNil(store.begin(key: key), "nor may the same block run twice at once")
+        XCTAssertTrue(store.session(for: key) === running,
+                      "the refused run must leave the live one alone")
+
+        running.finish(with: ProcessRunner.Output(status: 0, outputText: "done", errorText: ""))
+        XCTAssertFalse(store.isRunning, "a finished run no longer holds the gate")
+        XCTAssertNotNil(store.begin(key: other))
     }
 
     /// A session begun for a block whose card has never been created — a run started from a
@@ -181,15 +205,14 @@ final class RunSessionMirroringTests: XCTestCase {
         stack.ensureMeasured()
         let bare = stack.contentHeight
 
-        store.begin(key: RunBlockKey(documentURL: documentURL, location: 42))
+        store.begin(key: RunBlockKey(documentURL: documentURL, location: 42))?
             .finish(with: ProcessRunner.Output(status: 0, outputText: "line\nline",
                                                errorText: ""))
         stack.remeasureComponent(at: 0)
         stack.ensureMeasured()
 
         let expected = store.consoleHeight(
-            for: RunBlockKey(documentURL: documentURL, location: 42),
-            width: width, metrics: metrics)
+            for: RunBlockKey(documentURL: documentURL, location: 42), metrics: metrics)
         XCTAssertGreaterThan(expected, 0)
         XCTAssertEqual(stack.contentHeight, bare + expected,
                        "the page must make room for a console no view has drawn yet")

@@ -59,7 +59,7 @@ final class ConsoleColorTests: XCTestCase {
                             height: card.sizeThatFits(width: width).height)
         card.layoutSubtreeIfNeeded()
 
-        let panel = try XCTUnwrap(card.runPanels.first, "the run opened no console")
+        let panel = try XCTUnwrap(card.runPanel, "the run opened no console")
         let scroll = try XCTUnwrap(panel.subviews.compactMap { $0 as? NSScrollView }.first)
         return try XCTUnwrap(scroll.documentView as? NSTextView)
     }
@@ -203,21 +203,22 @@ final class ConsoleColorTests: XCTestCase {
         XCTAssertEqual(text.attributedString().string, "tick 1\n\ntick 2")
     }
 
-    /// The live view and the logged one must agree on how many lines there are, or the console
-    /// jumps by a row at the moment the command exits.
-    func testTheConsoleDoesNotChangeHeightWhenTheRunFinishes() {
+    /// The live view and the logged one must agree on how many lines there are. The console's
+    /// height no longer depends on that — it is fixed — but a phantom line gained at the exit
+    /// would still shunt a tail-pinned transcript by a row under the reader's eye.
+    func testTheLoggedResultHasTheSameLinesAsTheLiveView() {
         let transcript = parse("tick 1\ntick 2\n")
-        let running = RunOutputPanel.settledHeight(
-            bodyText: RunOutputPanel.liveText(transcript, metrics: metrics),
-            width: width, metrics: metrics)
-        let finished = RunOutputPanel.settledHeight(
-            bodyText: RunOutputPanel.outputText(
-                ProcessRunner.Output(status: 0, outputText: transcript.plainText, errorText: "",
-                                     transcript: transcript.trimmingBlankEdges()),
-                metrics: metrics),
-            width: width, metrics: metrics)
+        func measure(_ text: NSAttributedString) -> CGFloat {
+            TextMeasurer.shared.size(of: text,
+                                     width: RunOutputPanel.unwrappedMeasureWidth).height
+        }
+        let running = measure(RunOutputPanel.liveText(transcript, metrics: metrics))
+        let finished = measure(RunOutputPanel.outputText(
+            ProcessRunner.Output(status: 0, outputText: transcript.plainText, errorText: "",
+                                 transcript: transcript.trimmingBlankEdges()),
+            metrics: metrics))
         XCTAssertEqual(running, finished, accuracy: 0.01,
-                       "settling into the logged result must not resize the console")
+                       "settling into the logged result must not add or lose a row")
     }
 
     /// The non-pty paths — `UpdateInstaller`, and any host that fabricates a result — carry no

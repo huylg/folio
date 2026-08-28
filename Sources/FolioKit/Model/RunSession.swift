@@ -104,32 +104,45 @@ public final class RunSession {
     }
 }
 
-/// The per-block run history, newest first — the shared state behind every console.
+/// The document's consoles: at most one per block, and at most one run in flight — the shared
+/// state behind every console.
 ///
 /// Owned by the surface that owns the document (the reading pane), and handed to any other
 /// surface rendering the same document (a peek card), which is what makes a run started in one
 /// place appear in the other. A store for a document nobody has open — a cross-file peek's —
 /// is simply thrown away with the peek, and a run still in flight finishes into a session
 /// nobody renders.
+///
+/// A block keeps one console: re-running replaces it, rather than stacking a second one under
+/// the code. And runs are **serial** — while any of this store's blocks is still running,
+/// `begin` refuses, because two commands sharing one project root are two commands fighting
+/// over the same working tree. The scope is the store, so it is the document: a peek of
+/// *another* file carries its own store and its own single run.
 public final class RunSessionStore {
 
-    /// Older sessions beyond this fall off the bottom of a block's history.
-    public static let maxRunHistory = 10
-
-    private var sessionsByKey: [RunBlockKey: [RunSession]] = [:]
+    private var sessionsByKey: [RunBlockKey: RunSession] = [:]
     private var observers: [UUID: (RunBlockKey) -> Void] = [:]
     /// The store's own token on each session, so it can stop watching one it drops.
     private var sessionTokens: [ObjectIdentifier: UUID] = [:]
 
     public init() {}
 
-    /// The sessions for one block, newest first.
-    public func sessions(for key: RunBlockKey) -> [RunSession] {
-        sessionsByKey[key] ?? []
+    /// The block's console, or nil when it has none.
+    public func session(for key: RunBlockKey) -> RunSession? {
+        sessionsByKey[key]
     }
 
-    /// Registers `handler` for changes to any block's session list — a run beginning,
-    /// finishing, or closing. Fired synchronously on the main thread with the block's key.
+    /// The run still in flight, whichever block it belongs to — nil when the store is idle.
+    public var runningSession: RunSession? {
+        sessionsByKey.values.first { $0.isRunning }
+    }
+
+    /// Whether a command is running anywhere in this document. Every Run button reads it:
+    /// while it is true, none of them will start a second one.
+    public var isRunning: Bool { runningSession != nil }
+
+    /// Registers `handler` for changes to any block's session — a run beginning, finishing, or
+    /// closing. Fired synchronously on the main thread with the block's key.
     public func addObserver(_ handler: @escaping (RunBlockKey) -> Void) -> UUID {
         let token = UUID()
         observers[token] = handler
@@ -140,21 +153,22 @@ public final class RunSessionStore {
         observers.removeValue(forKey: token)
     }
 
-    /// Opens a new session at the top of the block's history, closing any that the cap pushes
-    /// off the bottom. Observers are notified synchronously, so a view bound to the key has
-    /// its console up by the time this returns.
+    /// Opens the block's session, replacing whatever it had — one block, one console.
+    ///
+    /// Returns nil while another run is still going: runs are serial, and the caller's Run
+    /// button is already out by then, so this is the belt to that braces. Observers are
+    /// notified synchronously, so a view bound to the key has its console up by the time this
+    /// returns.
     @discardableResult
-    public func begin(key: RunBlockKey, startedAt: Date = Date()) -> RunSession {
+    public func begin(key: RunBlockKey, startedAt: Date = Date()) -> RunSession? {
+        guard !isRunning else { return nil }
         let session = RunSession(key: key, startedAt: startedAt)
         watch(session)
-        var list = sessionsByKey[key] ?? []
-        list.insert(session, at: 0)
-        sessionsByKey[key] = list
-        if list.count > Self.maxRunHistory {
-            // `close()` re-enters through `watch`'s observer, which removes each one from the
-            // stored list; the walk is over this local snapshot.
-            for dropped in list[Self.maxRunHistory...] { dropped.close() }
-        }
+        // Installed *before* the old one is closed: closing re-enters through `watch`'s
+        // observer, and a view reacting to that must already see the session taking its place.
+        let previous = sessionsByKey[key]
+        sessionsByKey[key] = session
+        previous?.close()
         notify(key)
         return session
     }
@@ -164,14 +178,14 @@ public final class RunSessionStore {
     /// of unchanged blocks survive, which is what lets a console outlive a re-render.
     public func prune(keeping documentURL: URL, validLocations: Set<Int>) {
         let url = documentURL.standardizedFileURL
-        for (key, list) in sessionsByKey
+        for (key, session) in sessionsByKey
         where key.documentURL != url || !validLocations.contains(key.location) {
-            for session in list { session.close() }
+            session.close()
         }
     }
 
-    /// The store rides along on each session so a close — from any console, or from the cap —
-    /// drops it here and tells the key's observers.
+    /// The store rides along on each session so a close — from any console, or from a re-run
+    /// replacing it — drops it here and tells the key's observers.
     private func watch(_ session: RunSession) {
         let token = session.addObserver { [weak self, weak session] event in
             guard let self, let session else { return }
@@ -194,8 +208,9 @@ public final class RunSessionStore {
         if let token = sessionTokens.removeValue(forKey: ObjectIdentifier(session)) {
             session.removeObserver(token)
         }
-        sessionsByKey[session.key]?.removeAll { $0 === session }
-        if sessionsByKey[session.key]?.isEmpty == true {
+        // Only if it is still the block's session: a replaced one closes *after* its successor
+        // has taken the slot, and must not carry it out with it.
+        if sessionsByKey[session.key] === session {
             sessionsByKey.removeValue(forKey: session.key)
         }
     }

@@ -108,42 +108,80 @@ final class RunnableCodeBlockTests: XCTestCase {
         XCTAssertNil(unlabelled.runButton, "a fence with no language must not be runnable")
     }
 
-    func testRunOpensARunningConsoleWithoutBlockingTheButton() throws {
+    func testRunOpensAConsoleAndHoldsTheButtonUntilTheCommandExits() throws {
         let width: CGFloat = 500
         let host = RecordingHost()
         let card = CodeComponentView(label: "bash", source: "echo hi", language: "bash",
                                      lines: lines("echo hi"), metrics: metrics, host: host)
         let button = try XCTUnwrap(card.runButton)
+        XCTAssertTrue(button.isEnabled, "an idle block is runnable")
 
         click(button)
         XCTAssertEqual(host.ran, ["echo hi"])
-        XCTAssertTrue(button.isEnabled, "the run must never block the button")
-        XCTAssertEqual(card.runPanels.count, 1,
-                       "a console must appear the moment the run starts")
-        XCTAssertTrue(card.runPanels[0].isRunning)
+        XCTAssertFalse(button.isEnabled, "runs are serial: the button is out while one runs")
+        let panel = try XCTUnwrap(card.runPanel,
+                                  "a console must appear the moment the run starts")
+        XCTAssertTrue(panel.isRunning)
         XCTAssertNil(card.runOutput, "no result yet — the command is still running")
-        XCTAssertGreaterThan(card.outputPanelHeight(width: width), 0,
+        XCTAssertGreaterThan(card.outputPanelHeight, 0,
                              "the running console must already take space on the page")
 
         // The pty streams into the running console as the command produces output.
-        let emptyHeight = card.runPanels[0].fullHeight(width: width)
+        let emptyHeight = panel.fullHeight
         host.emitOutput("hello\nworld\nagain\n")
-        XCTAssertEqual(card.runPanels[0].liveTranscript.plainText, "hello\nworld\nagain\n",
+        XCTAssertEqual(panel.liveTranscript.plainText, "hello\nworld\nagain\n",
                        "live output must land in the console before the command exits")
-        XCTAssertTrue(card.runPanels[0].isRunning)
-        XCTAssertGreaterThan(card.runPanels[0].fullHeight(width: width), emptyHeight,
-                             "the console must grow with the live output")
+        XCTAssertTrue(panel.isRunning)
+        XCTAssertEqual(panel.fullHeight, emptyHeight,
+                       "live output scrolls inside the console — it must not resize it")
 
-        // A second click mid-run opens a second console instead of being swallowed.
+        // A second click mid-run starts nothing: one command at a time.
         click(button)
-        XCTAssertEqual(host.ran, ["echo hi", "echo hi"])
-        XCTAssertEqual(card.runPanels.count, 2)
+        XCTAssertEqual(host.ran, ["echo hi"], "a click mid-run must not start a second command")
+        XCTAssertTrue(card.runPanel === panel, "and must not disturb the running console")
 
         host.finishPendingRuns(with: ProcessRunner.Output(status: 0, outputText: "hi",
                                                           errorText: ""))
-        XCTAssertEqual(card.runPanels.filter(\.isRunning).count, 0,
-                       "both consoles must carry their run to completion")
-        XCTAssertEqual(card.runEntries.count, 2)
+        XCTAssertFalse(panel.isRunning, "the console must carry its run to completion")
+        XCTAssertEqual(card.runEntry?.output.outputText, "hi")
+        XCTAssertTrue(button.isEnabled, "the button comes back when the command exits")
+    }
+
+    /// The serial gate is the document's, not the block's: while one block runs, no block in
+    /// the same document will start a second command at the same project root.
+    func testARunningBlockPutsEveryOtherBlocksRunButtonOut() throws {
+        let store = RunSessionStore()
+        let documentURL = URL(fileURLWithPath: "/tmp/serial-doc.md")
+        func card(at location: Int, host: RecordingHost) -> CodeComponentView {
+            let view = CodeComponentView(label: "bash", source: "echo \(location)",
+                                         language: "bash", lines: lines("echo hi"),
+                                         metrics: metrics, host: host)
+            view.bindRunSessions(
+                key: RunBlockKey(documentURL: documentURL, location: location), store: store)
+            return view
+        }
+        let firstHost = RecordingHost()
+        let secondHost = RecordingHost()
+        let first = card(at: 10, host: firstHost)
+        let second = card(at: 90, host: secondHost)
+        let secondButton = try XCTUnwrap(second.runButton)
+
+        click(try XCTUnwrap(first.runButton))
+        XCTAssertFalse(secondButton.isEnabled,
+                       "a run anywhere in the document puts every Run button out")
+
+        click(secondButton)
+        XCTAssertTrue(secondHost.ran.isEmpty, "the second block must not run in parallel")
+        XCTAssertNil(second.runPanel, "and must not open a console it never ran")
+
+        firstHost.finishPendingRuns(with: ProcessRunner.Output(status: 0, outputText: "done",
+                                                               errorText: ""))
+        XCTAssertTrue(secondButton.isEnabled, "the first run exiting frees the others")
+        click(secondButton)
+        XCTAssertEqual(secondHost.ran, ["echo 90"])
+        XCTAssertNotNil(second.runPanel)
+        XCTAssertNotNil(first.runPanel,
+                        "the finished block keeps its console while another block runs")
     }
 
     func testClosingARunningConsoleDiscardsItsLateResult() throws {
@@ -152,20 +190,22 @@ final class RunnableCodeBlockTests: XCTestCase {
                                      lines: lines("sleep 5"), metrics: metrics, host: host)
 
         click(try XCTUnwrap(card.runButton))
-        XCTAssertEqual(card.runPanels.count, 1)
+        let panel = try XCTUnwrap(card.runPanel)
 
         // The reader gives up on it before it exits.
-        click(card.runPanels[0].closeButton)
-        XCTAssertTrue(card.runPanels.isEmpty)
+        click(panel.closeButton)
+        XCTAssertNil(card.runPanel)
+        XCTAssertTrue(try XCTUnwrap(card.runButton).isEnabled,
+                      "dismissing a running console frees the button")
 
         // The command exits later — its console is gone, so the result goes nowhere.
         host.finishPendingRuns(with: ProcessRunner.Output(status: 0, outputText: "late",
                                                           errorText: ""))
-        XCTAssertTrue(card.runPanels.isEmpty)
+        XCTAssertNil(card.runPanel)
         XCTAssertNil(card.runOutput)
     }
 
-    func testOutputGrowsTheCardAndDismissalShrinksItBack() throws {
+    func testAConsoleGrowsTheCardOnceAndDismissalShrinksItBack() throws {
         let host = RecordingHost()
         let card = CodeComponentView(label: "bash", source: "echo hi", language: "bash",
                                      lines: lines("echo hi"), metrics: metrics, host: host)
@@ -180,8 +220,8 @@ final class RunnableCodeBlockTests: XCTestCase {
         host.finishPendingRuns(with: ProcessRunner.Output(status: 0, outputText: "hi\nhi\nhi",
                                                           errorText: ""))
         XCTAssertNotNil(card.runOutput)
-        XCTAssertGreaterThan(card.sizeThatFits(width: width).height, running,
-                             "the result must grow the console past its running state")
+        XCTAssertEqual(card.sizeThatFits(width: width).height, running,
+                       "the result must land inside the console the run already reserved")
         XCTAssertGreaterThan(host.heightChanges.count, 0,
                              "the card must ask its host to re-measure it")
 
@@ -217,7 +257,7 @@ final class RunnableCodeBlockTests: XCTestCase {
         card.frame = NSRect(x: 0, y: 0, width: width, height: height)
         content.layoutSubtreeIfNeeded()
 
-        let panel = try XCTUnwrap(card.runPanels.first)
+        let panel = try XCTUnwrap(card.runPanel)
         let accessories = panel.headerAccessories.frame
         XCTAssertGreaterThan(accessories.width, 0,
                              "a running console has a spinner and a close button")
@@ -228,19 +268,48 @@ final class RunnableCodeBlockTests: XCTestCase {
                                  "the accessories belong on the header strip")
     }
 
-    func testLongOutputIsCappedNotUnbounded() {
-        let host = RecordingHost()
-        let card = CodeComponentView(label: "bash", source: "yes", language: "bash",
-                                     lines: lines("yes"), metrics: metrics, host: host)
-        let chatty = (1...500).map { "line \($0)" }.joined(separator: "\n")
-        card.showRunOutput(ProcessRunner.Output(status: 0, outputText: chatty, errorText: ""))
-        XCTAssertLessThanOrEqual(
-            card.outputPanelHeight(width: 500),
-            RunOutputPanel.maxOutputTextHeight + CardChrome.headerHeight + 60,
-            "a chatty command must scroll inside the console, not take over the page")
+    /// However much a command prints — nothing at all, or five hundred lines — the console is
+    /// the same size. Sized to its content it moved on every tick of a live transcript, and a
+    /// reader who ran a block twice watched the page shuffle under the pointer.
+    func testTheConsoleIsTheSameHeightWhateverTheCommandPrints() {
+        func card(printing text: String) -> CodeComponentView {
+            let view = CodeComponentView(label: "bash", source: "yes", language: "bash",
+                                         lines: lines("yes"), metrics: metrics,
+                                         host: RecordingHost())
+            view.showRunOutput(ProcessRunner.Output(status: 0, outputText: text, errorText: ""))
+            return view
+        }
+        let silent = card(printing: "").outputPanelHeight
+        let oneLine = card(printing: "hi").outputPanelHeight
+        let chatty = card(printing: (1...500).map { "line \($0)" }.joined(separator: "\n"))
+            .outputPanelHeight
+
+        XCTAssertGreaterThan(silent, 0, "even an empty console reserves its space")
+        XCTAssertEqual(oneLine, silent, "one line of output must not resize the console")
+        XCTAssertEqual(chatty, silent,
+                       "a chatty command must scroll inside the console, not grow it")
     }
 
-    func testEveryRunGetsItsOwnConsoleNewestOnTop() throws {
+    /// The live console and the one showing the exited command's result are the same size, so
+    /// the moment a command finishes moves nothing.
+    func testFinishingACommandDoesNotResizeItsConsole() throws {
+        let host = RecordingHost()
+        let card = CodeComponentView(label: "bash", source: "make test", language: "bash",
+                                     lines: lines("make test"), metrics: metrics, host: host)
+        click(try XCTUnwrap(card.runButton))
+        let running = card.outputPanelHeight
+        host.emitOutput("building\nlinking\n")
+        XCTAssertEqual(card.outputPanelHeight, running, "live output moves nothing")
+
+        host.finishPendingRuns(with: ProcessRunner.Output(status: 1, outputText: "",
+                                                          errorText: "failed"))
+        XCTAssertEqual(card.outputPanelHeight, running,
+                       "settling into the logged result — exit line and all — moves nothing")
+    }
+
+    /// A block keeps one console. Running it again replaces what is there rather than
+    /// stacking a second card under the code, so the page cannot grow a log of old runs.
+    func testARerunReplacesTheBlocksConsole() throws {
         let width: CGFloat = 500
         let host = RecordingHost()
         let card = CodeComponentView(label: "bash", source: "date", language: "bash",
@@ -249,70 +318,51 @@ final class RunnableCodeBlockTests: XCTestCase {
 
         card.showRunOutput(ProcessRunner.Output(status: 0, outputText: "first run",
                                                 errorText: ""))
-        let single = card.outputPanelHeight(width: width)
+        let first = try XCTUnwrap(card.runPanel)
+        let single = card.outputPanelHeight
 
         card.showRunOutput(ProcessRunner.Output(status: 0, outputText: "second run",
                                                 errorText: ""))
-        XCTAssertEqual(card.runPanels.count, 2,
-                       "every run must get a console of its own")
+        let second = try XCTUnwrap(card.runPanel)
+        XCTAssertFalse(first === second, "the re-run must open a console of its own")
         XCTAssertEqual(card.runOutput?.outputText, "second run",
-                       "the newest console must be the one on top")
-        XCTAssertGreaterThan(card.outputPanelHeight(width: width), single,
-                             "a second console must grow the card further")
+                       "and the block must show the latest result")
+        XCTAssertEqual(card.outputPanelHeight, single,
+                       "a re-run must cost the page exactly one console, the same size")
 
         card.frame = NSRect(x: 0, y: 0, width: width,
                             height: card.sizeThatFits(width: width).height)
         card.layoutSubtreeIfNeeded()
-        XCTAssertLessThan(card.runPanels[0].frame.minY, card.runPanels[1].frame.minY,
-                          "the latest console must sit above the previous one")
+        XCTAssertNil(first.superview, "the replaced console must leave the card")
+        XCTAssertEqual(card.subviews.compactMap { $0 as? RunOutputPanel }, [second],
+                       "one block, one console")
 
-        // Closing one specific console keeps the other.
-        let older = card.runPanels[1]
-        XCTAssertEqual(older.entry?.output.outputText, "first run")
-        click(older.closeButton)
-        XCTAssertEqual(card.runEntries.map(\.output.outputText), ["second run"],
-                       "closing the older console must leave the newer one alone")
-        XCTAssertEqual(card.outputPanelHeight(width: width), single,
-                       "one remaining console must measure like a single run")
-
-        click(card.runPanels[0].closeButton)
-        XCTAssertTrue(card.runPanels.isEmpty)
+        click(second.closeButton)
+        XCTAssertNil(card.runPanel)
         XCTAssertNil(card.runOutput)
+        XCTAssertEqual(card.outputPanelHeight, 0)
     }
 
-    func testTheHistoryIsCapped() {
-        let card = CodeComponentView(label: "bash", source: "x", language: "bash",
-                                     lines: lines("x"), metrics: metrics,
-                                     host: RecordingHost())
-        for run in 1...(RunSessionStore.maxRunHistory + 3) {
-            card.showRunOutput(ProcessRunner.Output(status: 0, outputText: "run \(run)",
-                                                    errorText: ""))
-        }
-        XCTAssertEqual(card.runEntries.count, RunSessionStore.maxRunHistory)
-        XCTAssertEqual(card.runOutput?.outputText,
-                       "run \(RunSessionStore.maxRunHistory + 3)",
-                       "the cap must drop the oldest runs, never the newest")
-    }
-
-    func testTheCappedViewportShowsWholeLinesOnly() throws {
-        let width: CGFloat = 500
+    func testTheViewportIsWholeLinesOnly() throws {
         let host = RecordingHost()
         let card = CodeComponentView(label: "bash", source: "make test", language: "bash",
                                      lines: lines("make test"), metrics: metrics, host: host)
         click(try XCTUnwrap(card.runButton))
         host.emitOutput((1...200).map { "line \($0)" }.joined(separator: "\n"))
 
-        let panel = try XCTUnwrap(card.runPanels.first)
+        let panel = try XCTUnwrap(card.runPanel)
         let insets = metrics.codeCardInsets
-        let body = panel.fullHeight(width: width)
+        let body = panel.fullHeight
             - CardChrome.headerHeight - insets.bodyTop - insets.bodyBottom
         // The panel's own advance from one row to the next, which is a row's height *plus*
         // its leading — measuring a lone "x" would answer the height alone and no longer
         // divides the viewport evenly.
         let line = RunOutputPanel.lineHeight(metrics: metrics)
-        XCTAssertLessThanOrEqual(body, RunOutputPanel.maxOutputTextHeight)
+        XCTAssertEqual(body, RunOutputPanel.bodyHeight(metrics: metrics))
+        XCTAssertEqual(body, CGFloat(RunOutputPanel.outputRows) * line,
+                       "the console shows exactly the rows it promises")
         XCTAssertEqual(body.truncatingRemainder(dividingBy: line), 0,
-                       "a viewport of 13½ lines shows half a string at its edge")
+                       "a viewport of 8½ lines shows half a string at its edge")
     }
 
     func testLiveUpdatesKeepTheTailFullyVisible() throws {
@@ -334,7 +384,7 @@ final class RunnableCodeBlockTests: XCTestCase {
         host.emitOutput((1...100).map { "line \($0)" }.joined(separator: "\n"))
         layoutForCurrentContent()
 
-        let panel = try XCTUnwrap(card.runPanels.first)
+        let panel = try XCTUnwrap(card.runPanel)
         let scroll = try XCTUnwrap(
             panel.subviews.compactMap { $0 as? NSScrollView }.first)
         let text = try XCTUnwrap(scroll.documentView)
@@ -362,7 +412,7 @@ final class RunnableCodeBlockTests: XCTestCase {
                             height: card.sizeThatFits(width: width).height)
         card.layoutSubtreeIfNeeded()
 
-        let panel = try XCTUnwrap(card.runPanels.first)
+        let panel = try XCTUnwrap(card.runPanel)
         let line = RunOutputPanel.lineHeight(metrics: metrics)
         let scroll = try XCTUnwrap(panel.subviews.compactMap { $0 as? NSScrollView }.first)
         let text = try XCTUnwrap(scroll.documentView)
@@ -372,8 +422,45 @@ final class RunnableCodeBlockTests: XCTestCase {
                              "the long line must extend into a horizontal scroll")
     }
 
-    /// The horizontal scroll bar is carved out of the viewport, so the viewport must reserve
-    /// room for it — or two lines of output end up needing a vertical scroll bar.
+    /// A tall transcript of short lines scrolls down, and only down.
+    ///
+    /// The document view is stretched to fill the text area so a narrow transcript is still
+    /// selectable across the console's width. Stretched to the *whole* viewport it overflows
+    /// sideways by exactly the vertical bar's thickness the moment that bar appears, and
+    /// summons a horizontal bar with nothing to scroll — which then carves a row out of a
+    /// console that can no longer grow to replace it.
+    func testATallTranscriptOfShortLinesNeedsNoHorizontalScroll() throws {
+        let width: CGFloat = 500
+        let host = RecordingHost()
+        let card = CodeComponentView(label: "bash", source: "seq 1 40", language: "bash",
+                                     lines: lines("seq 1 40"), metrics: metrics, host: host)
+        let window = TestWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 800),
+                                styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView?.addSubview(card)
+        click(try XCTUnwrap(card.runButton))
+        host.emitOutput((1...40).map { "line \($0)" }.joined(separator: "\n"))
+
+        card.frame = NSRect(x: 0, y: 0, width: width,
+                            height: card.sizeThatFits(width: width).height)
+        card.layoutSubtreeIfNeeded()
+
+        let panel = try XCTUnwrap(card.runPanel)
+        let scroll = try XCTUnwrap(panel.subviews.compactMap { $0 as? NSScrollView }.first)
+        let text = try XCTUnwrap(scroll.documentView)
+        XCTAssertGreaterThan(text.frame.height, scroll.contentView.bounds.height,
+                             "forty lines must overflow downward — that is the fixture")
+        XCTAssertLessThanOrEqual(text.frame.width, scroll.contentView.bounds.width,
+                                 "short lines must not overflow sideways")
+        XCTAssertEqual(scroll.contentView.bounds.height,
+                       RunOutputPanel.bodyHeight(metrics: metrics),
+                       "so no horizontal bar carves a row out of the viewport")
+        XCTAssertEqual(scroll.contentView.bounds.height.truncatingRemainder(
+            dividingBy: RunOutputPanel.lineHeight(metrics: metrics)), 0,
+            "and the reader sees whole rows")
+    }
+
+    /// The horizontal scroll bar is carved out of the viewport, so a long line costs a row of
+    /// it — but never so much that two lines of output stop being fully visible.
     func testAShortTranscriptWithALongLineNeedsNoVerticalScroll() throws {
         let width: CGFloat = 500
         let host = RecordingHost()
@@ -390,7 +477,7 @@ final class RunnableCodeBlockTests: XCTestCase {
                             height: card.sizeThatFits(width: width).height)
         card.layoutSubtreeIfNeeded()
 
-        let panel = try XCTUnwrap(card.runPanels.first)
+        let panel = try XCTUnwrap(card.runPanel)
         let scroll = try XCTUnwrap(panel.subviews.compactMap { $0 as? NSScrollView }.first)
         let text = try XCTUnwrap(scroll.documentView)
         XCTAssertGreaterThanOrEqual(scroll.contentView.bounds.height, text.frame.height,
@@ -408,7 +495,7 @@ final class RunnableCodeBlockTests: XCTestCase {
                                         lines: lines("x"), metrics: metrics,
                                         host: RecordingHost())
         settled.showRunOutput(result)
-        let fullHeight = settled.outputPanelHeight(width: width)
+        let fullHeight = settled.outputPanelHeight
         XCTAssertGreaterThan(fullHeight, 0)
 
         RunOutputPanel.revealDuration = 0.25
@@ -416,14 +503,14 @@ final class RunnableCodeBlockTests: XCTestCase {
         let card = CodeComponentView(label: "bash", source: "x", language: "bash",
                                      lines: lines("x"), metrics: metrics, host: host)
         card.showRunOutput(result)
-        XCTAssertEqual(card.outputPanelHeight(width: width), 0,
+        XCTAssertEqual(card.outputPanelHeight, 0,
                        "the panel must start folded, not snap in")
 
         let deadline = Date().addingTimeInterval(5)
-        while card.outputPanelHeight(width: width) < fullHeight, Date() < deadline {
+        while card.outputPanelHeight < fullHeight, Date() < deadline {
             RunLoop.main.run(until: Date().addingTimeInterval(0.01))
         }
-        XCTAssertEqual(card.outputPanelHeight(width: width), fullHeight,
+        XCTAssertEqual(card.outputPanelHeight, fullHeight,
                        "the unfold must settle at the same height an instant reveal gives")
         // The finish re-measure plus at least one animated step. A loaded machine may land
         // t ≥ 1 on the timer's first fire, so more steps than that cannot be demanded.
@@ -452,7 +539,7 @@ final class RunnableCodeBlockTests: XCTestCase {
 
         let before = TextMeasurer.shared.measures
         _ = card.sizeThatFits(width: width)
-        _ = card.outputPanelHeight(width: width)
+        _ = card.outputPanelHeight
         _ = card.cardRect
         card.needsLayout = true
         card.layoutSubtreeIfNeeded()
@@ -501,7 +588,7 @@ final class RunnableCodeBlockTests: XCTestCase {
                            + "reflow the page")
 
         // Closing the console is a real height change again.
-        click(try XCTUnwrap(card.runPanels.first).closeButton)
+        click(try XCTUnwrap(card.runPanel).closeButton)
         stack.remeasureComponent(containing: card)
         XCTAssertTrue(stack.needsLayout, "the console folding away must reflow the page")
     }
