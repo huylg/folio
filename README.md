@@ -30,6 +30,10 @@ spread the width will hold.
 - The reading position is the reader's own: resizing the window, toggling the sidebar, or crossing
   from one column count to another puts them back exactly where they were.
 - Wiki-style and relative links resolve against the document's folder, so a vault stays navigable.
+- A coding agent's plan file — Claude Code's `~/.claude/plans`, Cursor's `~/.cursor/plans`,
+  Codex's `~/.codex/plans` — roots at the workspace of the session that wrote it, so its links
+  and run commands resolve against the project it describes rather than the plans folder. Links
+  with a line suffix (`src/voucher.py:1043`) open the file they name.
 
 **Blocks**
 

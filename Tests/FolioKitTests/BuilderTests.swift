@@ -219,7 +219,7 @@ final class LinkRouterTests: XCTestCase {
         }
     }
 
-    func testRelativeLinkIgnoresTheRoot() {
+    func testRelativeLinkPrefersTheBaseOverTheRoot() {
         let bogusRoot = URL(fileURLWithPath: "/definitely/not/here")
         let target = LinkRouter.resolve("deep-headings.md", relativeTo: fixturesDirectory,
                                         root: bogusRoot)
@@ -227,6 +227,46 @@ final class LinkRouterTests: XCTestCase {
             return XCTFail("expected a markdown target, got \(target)")
         }
         XCTAssertEqual(url.lastPathComponent, "deep-headings.md")
+    }
+
+    /// A document living outside the tree it describes — a Claude plan in `~/.claude/plans` —
+    /// writes its relative paths against the root, so a miss beside the document retries there.
+    func testRelativeLinkMissingAtTheBaseFallsBackToTheRoot() {
+        let target = LinkRouter.resolve("deep-headings.md", relativeTo: elsewhere,
+                                        root: fixturesDirectory)
+        guard case .markdown(let url, _) = target else {
+            return XCTFail("expected a markdown target, got \(target)")
+        }
+        XCTAssertEqual(url.standardizedFileURL.path,
+                       fixturesDirectory.appendingPathComponent("deep-headings.md")
+                           .standardizedFileURL.path)
+    }
+
+    /// Agent plans link with a line suffix — "src/voucher.py:1043" — which names the file.
+    func testTrailingLineNumberIsStripped() {
+        let target = LinkRouter.resolve("deep-headings.md:12", relativeTo: fixturesDirectory)
+        guard case .markdown(let url, _) = target else {
+            return XCTFail("expected a markdown target, got \(target)")
+        }
+        XCTAssertEqual(url.lastPathComponent, "deep-headings.md")
+    }
+
+    func testTrailingLineAndColumnAreStripped() {
+        let target = LinkRouter.resolve("deep-headings.md:12:4", relativeTo: elsewhere,
+                                        root: fixturesDirectory)
+        guard case .markdown(let url, _) = target else {
+            return XCTFail("expected a markdown target, got \(target)")
+        }
+        XCTAssertEqual(url.standardizedFileURL.path,
+                       fixturesDirectory.appendingPathComponent("deep-headings.md")
+                           .standardizedFileURL.path)
+    }
+
+    func testRelativeLinkMissingAtBaseAndRootIsMissing() {
+        guard case .missing = LinkRouter.resolve("nope.md", relativeTo: elsewhere,
+                                                 root: fixturesDirectory) else {
+            return XCTFail("a path missing at both base and root should classify as missing")
+        }
     }
 
     /// Without a root, a leading slash keeps meaning the filesystem, as it always did.
