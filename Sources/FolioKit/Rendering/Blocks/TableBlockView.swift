@@ -119,12 +119,8 @@ public final class TableBlockView: BlockCardView {
                 let text = cell.text
                 guard text.length > 0 else { continue }
                 natural[index] = max(natural[index], text.size().width)
-                let attributes = text.attributes(at: 0, effectiveRange: nil)
-                // Floor each column at its longest single word so nothing breaks mid-word.
-                for word in text.string.split(whereSeparator: { $0.isWhitespace }) {
-                    let size = (String(word) as NSString).size(withAttributes: attributes)
-                    minimum[index] = max(minimum[index], size.width)
-                }
+                // Floor each column at its longest unbreakable run so nothing breaks mid-word.
+                minimum[index] = max(minimum[index], minimumWidth(of: text))
             }
         }
 
@@ -138,6 +134,18 @@ public final class TableBlockView: BlockCardView {
             let slack = available - totalNatural
             return natural.map {
                 $0 + slack * ($0 / totalNatural) + cellPadding.left + cellPadding.right
+            }
+        }
+
+        if minimum.reduce(0, +) > available {
+            // Even the longest words do not fit side by side. Holding every column at its floor
+            // would push the table past the card and clip it, so the floors are capped instead
+            // and TextKit breaks the offending identifiers mid-word — the one case where a
+            // broken word is better than an invisible column. The cap is chosen so that every
+            // column whose floor fits keeps it whole ("Statistics" stays one word) and only the
+            // columns holding the oversize identifiers, which break anyway, share what is left.
+            return cappedFloors(minimum, available: available).map {
+                $0 + cellPadding.left + cellPadding.right
             }
         }
 
@@ -155,6 +163,61 @@ public final class TableBlockView: BlockCardView {
             }
         }
         return widths.map { $0 + cellPadding.left + cellPadding.right }
+    }
+
+    /// Water-filling: hand out floors from the smallest up while the rest can still be paid,
+    /// then split the remainder equally among the columns that cannot.
+    static func cappedFloors(_ floors: [CGFloat], available: CGFloat) -> [CGFloat] {
+        var widths = floors
+        var remaining = available
+        let order = floors.indices.sorted { floors[$0] < floors[$1] }
+        for (rank, index) in order.enumerated() {
+            let left = CGFloat(order.count - rank)
+            if floors[index] * left <= remaining {
+                widths[index] = floors[index]
+                remaining -= floors[index]
+            } else {
+                let cap = remaining / left
+                for capped in order[rank...] { widths[capped] = cap }
+                break
+            }
+        }
+        return widths
+    }
+
+    /// The widest run of text that cannot be broken across lines.
+    ///
+    /// Splitting on whitespace overstated this: TextKit also breaks after a slash or a hyphen,
+    /// so `elsa_statistics/db.py` needs only the room of its longer half. Asking the line-break
+    /// tokenizer gives the same opportunities TextKit will use, and each run is measured with
+    /// its own attributes because a cell can mix a code span with body text.
+    static func minimumWidth(of text: NSAttributedString) -> CGFloat {
+        let string = text.string as CFString
+        let length = CFStringGetLength(string)
+        guard length > 0 else { return 0 }
+        let tokenizer = CFStringTokenizerCreate(
+            nil, string, CFRangeMake(0, length), kCFStringTokenizerUnitLineBreak, nil
+        )
+        var widest: CGFloat = 0
+        var sawToken = false
+        while CFStringTokenizerAdvanceToNextToken(tokenizer) != [] {
+            let token = CFStringTokenizerGetCurrentTokenRange(tokenizer)
+            guard token.location != kCFNotFound, token.length > 0 else { continue }
+            sawToken = true
+            let run = text.attributedSubstring(from: NSRange(location: token.location,
+                                                             length: token.length))
+            // Trailing whitespace belongs to the run but never to the measure: the line ends
+            // there, and the space itself is free.
+            let lastInk = (run.string as NSString).rangeOfCharacter(
+                from: CharacterSet.whitespacesAndNewlines.inverted, options: .backwards
+            )
+            guard lastInk.location != NSNotFound else { continue }
+            let inked = run.attributedSubstring(
+                from: NSRange(location: 0, length: lastInk.location + lastInk.length)
+            )
+            widest = max(widest, inked.size().width)
+        }
+        return sawToken ? widest : text.size().width
     }
 
     /// Columns whose body cells are all numbers.
