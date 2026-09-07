@@ -152,6 +152,11 @@ public final class NativeDocumentView: NSView {
             self, selector: #selector(readerStartedScrolling),
             name: NSScrollView.willStartLiveScrollNotification, object: scrollView
         )
+        // Only the tracer wants to know when the hand comes off.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(readerEndedScrolling),
+            name: NSScrollView.didEndLiveScrollNotification, object: scrollView
+        )
 
         // Accessibility display settings must be observed on NSWorkspace's own notification
         // center; registering on NotificationCenter.default fails silently.
@@ -661,14 +666,16 @@ public final class NativeDocumentView: NSView {
     }
 
     public func captureScrollAnchor() -> ScrollAnchor {
-        let top = readerViewport.minY
-        guard let component = stackView.componentIndex(atY: top) else {
-            return ScrollAnchor(component: 0, offset: 0)
+        ScrollTrace.shared.measure(.captureAnchor) {
+            let top = readerViewport.minY
+            guard let component = stackView.componentIndex(atY: top) else {
+                return ScrollAnchor(component: 0, offset: 0)
+            }
+            // Measured against the same y navigation aligns on, so a position captured in a
+            // spread restores to that spread rather than to the middle of a column.
+            return ScrollAnchor(component: component,
+                                offset: top - stackView.alignmentY(forComponent: component))
         }
-        // Measured against the same y navigation aligns on, so a position captured in a spread
-        // restores to that spread rather than to the middle of a column.
-        return ScrollAnchor(component: component,
-                            offset: top - stackView.alignmentY(forComponent: component))
     }
 
     public func restore(_ anchor: ScrollAnchor) {
@@ -686,6 +693,7 @@ public final class NativeDocumentView: NSView {
     }
 
     @objc private func readerStartedScrolling() {
+        ScrollTrace.shared.gestureBegan(in: self)
         navigationTarget = nil
         navigationOffset = nil
         navigationArrived = false
@@ -703,15 +711,21 @@ public final class NativeDocumentView: NSView {
         }
     }
 
+    @objc private func readerEndedScrolling() {
+        ScrollTrace.shared.gestureEnded()
+    }
+
     @objc private func viewportChanged() {
-        // A scroll moves the link a hover card is anchored to; the card must not stay behind
-        // pointing at nothing.
-        if linkPeek.isShown { dismissLinkPeek() }
-        // The scrollers do not follow an animated `boundsOrigin` on their own.
-        if isNavigating { scrollView.reflectScrolledClipView(scrollView.contentView) }
-        stackView.populateVisible()
-        rememberReadingPosition()
-        reportViewport()
+        ScrollTrace.shared.viewportEvent {
+            // A scroll moves the link a hover card is anchored to; the card must not stay behind
+            // pointing at nothing.
+            if linkPeek.isShown { dismissLinkPeek() }
+            // The scrollers do not follow an animated `boundsOrigin` on their own.
+            if isNavigating { scrollView.reflectScrolledClipView(scrollView.contentView) }
+            stackView.populateVisible()
+            rememberReadingPosition()
+            reportViewport()
+        }
     }
 
     /// Where the reader put themselves, kept so a layout change can put them back.
@@ -765,6 +779,10 @@ public final class NativeDocumentView: NSView {
     private var lastProbeOffset: CGFloat = 0
 
     private func reportViewport() {
+        ScrollTrace.shared.measure(.reportViewport) { trackViewport() }
+    }
+
+    private func trackViewport() {
         // Which way the reader is going, recorded before any early return: a pinned navigation
         // returns above the tracking code, and leaving the last offset stale there made the next
         // scroll *upwards* look like no movement at all — which the guard below reads as forward,
@@ -777,7 +795,7 @@ public final class NativeDocumentView: NSView {
         // What is on screen is a fact about the viewport, so it is reported whatever the tracking
         // logic decides — including while a navigation is pinned. Reporting it at the end of the
         // tracking path meant a click left the group showing the page the reader had *left*.
-        reportVisibleSections(in: built)
+        ScrollTrace.shared.measure(.visibleSections) { reportVisibleSections(in: built) }
 
         // Mid-flight the viewport sweeps through every section between here and the destination;
         // reporting those would flicker the outline on the way past.
@@ -799,7 +817,8 @@ public final class NativeDocumentView: NSView {
             navigationTarget = nil
             navigationOffset = nil
         }
-        guard var heading = headingAtReadingLine() else { return }
+        guard var heading = ScrollTrace.shared.measure(.headingProbe, headingAtReadingLine)
+        else { return }
         // Scrolling forward never moves the outline backwards. Navigation aligns on a spread, so
         // the probe can start the next report *behind* the heading that was clicked — and an
         // outline that jumps back a section as the reader scrolls on reads as a glitch.
