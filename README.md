@@ -123,6 +123,30 @@ A deterministic structural dump: the primary regression check, and cheaper than 
 
 A PNG of the reading pane. `make snapshot` does the whole sample vault at 900pt wide.
 
+## Tracing a scroll
+
+When scrolling stutters, the question is what the main thread was doing in the frame that came
+late. Launch the binary with `FOLIO_SCROLL_TRACE` set and it says:
+
+```bash
+FOLIO_SCROLL_TRACE=1 .build/debug/Folio
+```
+
+Every trackpad or wheel gesture ends with a summary on stderr: how many frames arrived, how many
+came late and by how much, how many viewport events the scroll view sent per frame, and what each
+phase of the scroll cost over the gesture — vending views, relaying out prose, probing for the
+outline, drawing — costliest first. A single viewport event slow enough to have cost a frame on
+its own gets a line of its own, with its breakdown, as it happens. The same phases go out as
+`os_signpost` intervals under the `io.huylg.folio` subsystem, so Instruments' os_signpost track
+shows them frame by frame, and the lines also reach the unified log:
+
+```bash
+log stream --predicate 'subsystem == "io.huylg.folio" AND category == "scroll"'
+```
+
+which is how to read them from a bundled copy, launched with `open --env FOLIO_SCROLL_TRACE=1
+build/Folio.app`. With the variable unset none of this runs — the hooks are a flag check each.
+
 ## Layout
 
 ```

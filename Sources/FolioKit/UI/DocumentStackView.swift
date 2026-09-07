@@ -301,6 +301,12 @@ public final class DocumentStackView: NSView {
     private func measure(width: CGFloat) {
         guard width > 0, width != measuredWidth || firstPlacement.count != components.count
         else { return }
+        // Traced past the guard, so the count says how often the document was *actually*
+        // re-paginated — once per gesture would be a bug worth seeing.
+        ScrollTrace.shared.measure(.measure) { remeasure(width: width) }
+    }
+
+    private func remeasure(width: CGFloat) {
         measuredWidth = width
 
         parkLiveViews()
@@ -852,6 +858,10 @@ public final class DocumentStackView: NSView {
 
     /// Builds the placements near the viewport and retires the rest.
     public func populateVisible() {
+        ScrollTrace.shared.measure(.populateVisible) { vendVisibleViews() }
+    }
+
+    private func vendVisibleViews() {
         guard !components.isEmpty, !frames.isEmpty else { return }
         let viewport = visibleRect.isEmpty ? bounds : visibleRect
         let wanted = viewport.insetBy(dx: 0, dy: -Self.overscan)
@@ -876,7 +886,7 @@ public final class DocumentStackView: NSView {
     }
 
     private func install(_ placement: Int) -> NSView {
-        let view = makeView(for: placement)
+        let view = ScrollTrace.shared.measure(.installView) { makeView(for: placement) }
         view.frame = frame(ofPlacement: placement)
         (view as? DimmableComponent)?.isDimmed =
             focusedComponent != nil && focusedComponent != componentOfPlacement[placement]
@@ -970,6 +980,10 @@ public final class DocumentStackView: NSView {
         super.draw(dirtyRect)
         guard columnCount > 1, spreadTops.count > 1 else { return }
 
+        ScrollTrace.shared.measure(.drawPage) { drawPageBreaks(in: dirtyRect) }
+    }
+
+    private func drawPageBreaks(in dirtyRect: NSRect) {
         // A hairline's weight, brightened: the accent tint and the dash rhythm are what make it
         // read as chrome, so the line need not be heavy to say "the page ends here".
         let weight: CGFloat = 1

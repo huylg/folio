@@ -143,10 +143,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             self?.documentVC.sectionPreview(forOutlineIndex: index)
         }
         documentVC.onHeadingChange = { [weak self] index in
-            self?.outlineVC.highlight(index: index)
+            ScrollTrace.shared.measure(.outlineUpdate) { self?.outlineVC.highlight(index: index) }
         }
         documentVC.onVisibleSectionsChange = { [weak self] indices in
-            self?.outlineVC.markVisible(indices)
+            ScrollTrace.shared.measure(.outlineUpdate) { self?.outlineVC.markVisible(indices) }
         }
         documentVC.onOpenRelativeLink = { [weak self] url, fragment in
             self?.openRelativeLink(url, scrollTo: fragment)

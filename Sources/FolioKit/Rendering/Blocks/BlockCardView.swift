@@ -60,6 +60,10 @@ public class BlockCardView: NSView, DimmableComponent {
     open var cardRect: NSRect { bounds }
 
     public override func draw(_ dirtyRect: NSRect) {
+        ScrollTrace.shared.measure(.drawCard) { drawCard() }
+    }
+
+    private func drawCard() {
         let hairline = CardChrome.hairlineWidth(in: self)
         let path = NSBezierPath(
             roundedRect: cardRect.insetBy(dx: hairline / 2, dy: hairline / 2),

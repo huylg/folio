@@ -94,16 +94,24 @@ public final class TextComponentView: NSTextView, DimmableComponent {
     static var configureCount = 0
 
     public func configure(with attributed: NSAttributedString, kind: BlockKind) {
-        Self.configureCount += 1
-        self.kind = kind
-        // The view is recycled; a hover from its previous life must not outlive the content
-        // it was hovering on.
-        cancelLinkHover()
-        textContentStorage?.textStorage?.setAttributedString(attributed)
-        setSelectedRange(NSRange(location: 0, length: 0))
-        textInsets = Self.textInsets(of: attributed)
-        isDimmed = false
-        needsDisplay = true
+        ScrollTrace.shared.measure(.configureText) {
+            Self.configureCount += 1
+            self.kind = kind
+            // The view is recycled; a hover from its previous life must not outlive the
+            // content it was hovering on.
+            cancelLinkHover()
+            textContentStorage?.textStorage?.setAttributedString(attributed)
+            setSelectedRange(NSRange(location: 0, length: 0))
+            textInsets = Self.textInsets(of: attributed)
+            isDimmed = false
+            needsDisplay = true
+        }
+    }
+
+    /// Traced, because a scroll is mostly drawing: the work the viewport handler does is only
+    /// half a frame, and the other half is every prose view on screen painting its text again.
+    public override func draw(_ dirtyRect: NSRect) {
+        ScrollTrace.shared.measure(.drawText) { super.draw(dirtyRect) }
     }
 
     /// Paragraph spacing that is laid out *inside* this component, and so has to be trimmed off
