@@ -142,6 +142,7 @@ public final class DocumentStackView: NSView {
 
     private func resetPlacements() {
         frames = []
+        spreadStarts = []
         spreadOfPlacement = []
         columnOfPlacement = []
         spansSpread = []
@@ -155,7 +156,25 @@ public final class DocumentStackView: NSView {
     /// Each spread's top, and how tall its tallest column is.
     private var spreadTops: [CGFloat] = []
     private var spreadHeights: [CGFloat] = []
+    /// Where each spread's placements begin, with a sentinel at the end: spread `s` holds
+    /// `spreadStarts[s] ..< spreadStarts[s + 1]`. Placements are emitted in reading order, so
+    /// a spread's are one contiguous run — which is what lets a viewport find its placements
+    /// by a search over the spreads instead of a walk over the document.
+    private var spreadStarts: [Int] = []
     private var measuredWidth: CGFloat = 0
+    /// The column count the placements were laid out for. `columnCount` can change ahead of
+    /// the reflow that applies it, and a lookup between the two must read the arrays as they
+    /// are.
+    private var measuredColumns = 1
+
+    /// How many placement frames the scroll-path lookups — vending, the visible-section
+    /// report, the reading-line probe, the page-break draw — have examined, ever.
+    ///
+    /// Exposed for the same reason `measuredComponents` is. These lookups run several times per
+    /// scroll event, so on a book their cost *is* the cost of a scroll: walking every placement
+    /// on each of them made a long document hitch on every frame. The tests that matter assert
+    /// they look at a screenful, not the document.
+    private(set) var placementsVisited = 0
 
     /// The document's height: the last component's bottom plus the page's bottom padding.
     public private(set) var contentHeight: CGFloat = 0
@@ -208,7 +227,7 @@ public final class DocumentStackView: NSView {
     private static let textPoolLimit = 64
 
     /// How far beyond the viewport components are built, so scrolling does not chase them.
-    private static let overscan: CGFloat = 600
+    static let overscan: CGFloat = 600
 
     /// Focus mode: every component but this one is dimmed.
     public var focusedComponent: Int? {
@@ -308,6 +327,7 @@ public final class DocumentStackView: NSView {
 
     private func remeasure(width: CGFloat) {
         measuredWidth = width
+        measuredColumns = max(1, columnCount)
 
         parkLiveViews()
         resetPlacements()
@@ -496,6 +516,7 @@ public final class DocumentStackView: NSView {
         }
 
         markContinuations()
+        indexSpreads()
 
         let lastSpreadHeight = frames.isEmpty ? 0 : used.max() ?? 0
         spreadHeights.append(lastSpreadHeight)
@@ -521,12 +542,67 @@ public final class DocumentStackView: NSView {
         }
     }
 
+    /// Builds `spreadStarts` from the placements just emitted.
+    private func indexSpreads() {
+        spreadStarts = []
+        spreadStarts.reserveCapacity(spreadTops.count + 1)
+        for (placement, spread) in spreadOfPlacement.enumerated() {
+            while spreadStarts.count <= spread { spreadStarts.append(placement) }
+        }
+        // A spread started after the last placement — or a document with none — is empty.
+        while spreadStarts.count <= spreadTops.count { spreadStarts.append(frames.count) }
+    }
+
+    /// The placements on one spread.
+    private func placements(onSpread spread: Int) -> Range<Int> {
+        guard spread >= 0, spread + 1 < spreadStarts.count else { return 0..<0 }
+        return spreadStarts[spread]..<spreadStarts[spread + 1]
+    }
+
+    /// The spread a y coordinate falls on: the last one whose top is at or above it, or the
+    /// first for a y above the document.
+    private func spreadIndex(atY y: CGFloat) -> Int {
+        max(0, partitionPoint(spreadTops.count) { spreadTops[$0] > y } - 1)
+    }
+
+    /// The placements that can intersect the band between two y coordinates, as a range.
+    ///
+    /// Spreads are stacked, so a band picks out a run of them, and each spread's placements are
+    /// contiguous. A single column is one spread the height of the document, so there the band
+    /// is narrowed by the placements' tops instead, which only ever descend: a placement can
+    /// reach into the band from above only if it is the last one to start above it.
+    ///
+    /// The range may hold placements the band misses — the columns of a partly visible spread
+    /// — so callers still test each frame; what they never do is test the whole document.
+    private func placements(inBand minY: CGFloat, _ maxY: CGFloat) -> Range<Int> {
+        guard !frames.isEmpty, maxY >= minY else { return 0..<0 }
+        if measuredColumns > 1 {
+            let first = spreadIndex(atY: minY)
+            let last = spreadIndex(atY: maxY)
+            let lower = placements(onSpread: first).lowerBound
+            return lower..<max(lower, placements(onSpread: last).upperBound)
+        }
+        let below = partitionPoint(frames.count) { frames[$0].minY > maxY }
+        let start = max(0, partitionPoint(frames.count) { frames[$0].minY >= minY } - 1)
+        return start..<max(start, below)
+    }
+
+    /// The first index in `0..<count` for which `isPast` holds, or `count` when none does.
+    /// `isPast` must be false up to some point and true from there on.
+    private func partitionPoint(_ count: Int, isPast: (Int) -> Bool) -> Int {
+        var low = 0
+        var high = count
+        while low < high {
+            let mid = (low + high) / 2
+            placementsVisited += 1
+            if isPast(mid) { high = mid } else { low = mid + 1 }
+        }
+        return low
+    }
+
     /// Whether the section at the foot of a page carries on over the page break.
     public func chapterContinues(afterSpread spread: Int) -> Bool {
-        frames.indices.contains { placement in
-            spreadOfPlacement[placement] == spread
-                && continuationOfPlacement[placement] == .nextPage
-        }
+        placements(onSpread: spread).contains { continuationOfPlacement[$0] == .nextPage }
     }
 
     /// Where the section at this placement continues, if it does.
@@ -635,19 +711,34 @@ public final class DocumentStackView: NSView {
         guard spreadTops.indices.contains(index), spreadHeights.indices.contains(index)
         else { return .zero }
         let geometry = columnGeometry()
-        let columns = CGFloat(max(1, columnCount))
-        let width = geometry.columnWidth * columns + Self.gutter * (columns - 1)
         return NSRect(x: geometry.originX(0), y: spreadTops[index],
-                      width: width, height: spreadHeights[index])
+                      width: geometry.spanWidth, height: spreadHeights[index])
     }
 
-    /// The x offset of a column within the stack, and how wide a column is.
-    private func columnGeometry() -> (columnWidth: CGFloat, originX: (Int) -> CGFloat) {
+    /// Where the columns sit across the stack: how wide one is, where the first begins, and
+    /// how far apart they are.
+    ///
+    /// A value rather than a closure over `bounds`, and computed once per pass rather than
+    /// once per placement: the vending pass reads a frame for every placement it considers,
+    /// and rebuilding this — a bounds read and a closure allocation — for each of them was
+    /// most of what the pass cost.
+    private struct ColumnGeometry {
+        let columnWidth: CGFloat
+        let left: CGFloat
+        let stride: CGFloat
+        /// The width of every column and the gutters between them: a spanning placement's.
+        let spanWidth: CGFloat
+
+        func originX(_ column: Int) -> CGFloat { left + CGFloat(column) * stride }
+    }
+
+    private func columnGeometry() -> ColumnGeometry {
         let columns = max(1, columnCount)
         let width = contentWidth
         let total = width * CGFloat(columns) + Self.gutter * CGFloat(columns - 1)
         let left = max(0, ((bounds.width - total) / 2).rounded())
-        return (width, { index in left + CGFloat(index) * (width + Self.gutter) })
+        return ColumnGeometry(columnWidth: width, left: left, stride: width + Self.gutter,
+                              spanWidth: total)
     }
 
     private func applyHeight() {
@@ -735,13 +826,15 @@ public final class DocumentStackView: NSView {
     /// A placement's frame.
     private func frame(ofPlacement placement: Int) -> NSRect {
         guard frames.indices.contains(placement) else { return .zero }
-        let geometry = columnGeometry()
+        return frame(ofPlacement: placement, in: columnGeometry())
+    }
+
+    /// The same, for a caller that has the geometry in hand and a run of placements to read.
+    private func frame(ofPlacement placement: Int, in geometry: ColumnGeometry) -> NSRect {
+        placementsVisited += 1
         var frame = frames[placement]
         frame.origin.x = geometry.originX(columnOfPlacement[placement])
-        frame.size.width = spansSpread[placement]
-            ? geometry.columnWidth * CGFloat(max(1, columnCount))
-                + Self.gutter * CGFloat(max(0, columnCount - 1))
-            : geometry.columnWidth
+        frame.size.width = spansSpread[placement] ? geometry.spanWidth : geometry.columnWidth
         return frame
     }
 
@@ -779,10 +872,22 @@ public final class DocumentStackView: NSView {
     /// that has a position.
     public func components(intersecting rect: NSRect) -> Set<Int> {
         var result: Set<Int> = []
-        for placement in frames.indices where frame(ofPlacement: placement).intersects(rect) {
+        guard !frames.isEmpty else { return result }
+        let geometry = columnGeometry()
+        for placement in placements(inBand: rect.minY, rect.maxY)
+        where frame(ofPlacement: placement, in: geometry).intersects(rect) {
             result.insert(componentOfPlacement[placement])
         }
         return result
+    }
+
+    /// Every placement — its component, its spread and its frame — in placement order, for
+    /// tests that check the lookups above against a walk over the lot.
+    var placementsForTests: [(component: Int, spread: Int, frame: NSRect)] {
+        let geometry = columnGeometry()
+        return frames.indices.map {
+            (componentOfPlacement[$0], spreadOfPlacement[$0], frame(ofPlacement: $0, in: geometry))
+        }
     }
 
     /// The frames of every page of a component.
@@ -806,14 +911,12 @@ public final class DocumentStackView: NSView {
     /// The component a reader at this scroll offset has reached.
     public func componentIndex(atY y: CGFloat) -> Int? {
         guard !frames.isEmpty else { return nil }
-        guard columnCount > 1 else {
-            var result: Int?
+        guard measuredColumns > 1 else {
             // The last placement starting at or above `y`: a y in the gap between two of them
-            // belongs to the one above.
-            for (placement, frame) in frames.enumerated() {
-                if frame.minY <= y { result = componentOfPlacement[placement] } else { break }
-            }
-            return result ?? 0
+            // belongs to the one above. Found by search — the tops descend in placement order
+            // — because this runs twice per scroll event, for the anchor and for the outline.
+            let below = partitionPoint(frames.count) { frames[$0].minY > y }
+            return below > 0 ? componentOfPlacement[below - 1] : 0
         }
 
         // A spread has no single reading position: every column is on screen at once, and they
@@ -824,15 +927,15 @@ public final class DocumentStackView: NSView {
         // taken as a fraction of the spread's reading order. Restricting the probe to the first
         // column instead, as this did, meant a heading in a later column only became
         // current once the *next* spread arrived: the outline lagged a page behind the page.
-        let spread = spreadTops.lastIndex { $0 <= y } ?? 0
-        let placements = frames.indices.filter { spreadOfPlacement[$0] == spread }
+        let spread = spreadIndex(atY: y)
+        let placements = placements(onSpread: spread)
         guard !placements.isEmpty else { return 0 }
 
         let height = max(1, spreadHeights.indices.contains(spread)
                             ? spreadHeights[spread] : frame.height)
         let progress = min(1, max(0, (y - spreadTops[spread]) / height))
         let step = min(placements.count - 1, Int(progress * CGFloat(placements.count)))
-        return componentOfPlacement[placements[step]]
+        return componentOfPlacement[placements.lowerBound + step]
     }
 
     // MARK: Layout
@@ -865,13 +968,14 @@ public final class DocumentStackView: NSView {
         guard !components.isEmpty, !frames.isEmpty else { return }
         let viewport = visibleRect.isEmpty ? bounds : visibleRect
         let wanted = viewport.insetBy(dx: 0, dy: -Self.overscan)
+        let geometry = columnGeometry()
 
         var keep = Set<Int>()
-        for placement in frames.indices {
-            let frame = self.frame(ofPlacement: placement)
+        for placement in placements(inBand: wanted.minY, wanted.maxY) {
+            let frame = self.frame(ofPlacement: placement, in: geometry)
             guard frame.maxY >= wanted.minY, frame.minY <= wanted.maxY else { continue }
             keep.insert(placement)
-            let view = live[placement] ?? install(placement)
+            let view = live[placement] ?? install(placement, at: frame)
             if view.frame != frame { view.frame = frame }
         }
 
@@ -885,9 +989,9 @@ public final class DocumentStackView: NSView {
         parked = [:]
     }
 
-    private func install(_ placement: Int) -> NSView {
+    private func install(_ placement: Int, at frame: NSRect) -> NSView {
         let view = ScrollTrace.shared.measure(.installView) { makeView(for: placement) }
-        view.frame = frame(ofPlacement: placement)
+        view.frame = frame
         (view as? DimmableComponent)?.isDimmed =
             focusedComponent != nil && focusedComponent != componentOfPlacement[placement]
         // A reclaimed parked view never left the hierarchy; re-adding it would only churn.
@@ -987,7 +1091,13 @@ public final class DocumentStackView: NSView {
         // A hairline's weight, brightened: the accent tint and the dash rhythm are what make it
         // read as chrome, so the line need not be heavy to say "the page ends here".
         let weight: CGFloat = 1
-        for index in spreadTops.indices.dropLast() {
+        // Only the breaks near the dirty rect: a book has hundreds of spreads, and this runs on
+        // every strip a scroll exposes. The break after a spread sits in the gutter below it, so
+        // the run starts one spread above the rect's top.
+        let first = max(0, spreadIndex(atY: dirtyRect.minY) - 1)
+        let last = min(spreadTops.count - 2, spreadIndex(atY: dirtyRect.maxY))
+        guard first <= last else { return }
+        for index in first...last {
             guard let y = pageBreakY(after: index) else { continue }
             let spread = spreadFrame(at: index)
             guard dirtyRect.intersects(NSRect(x: spread.minX, y: y - 2,

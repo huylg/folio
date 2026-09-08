@@ -147,6 +147,21 @@ log stream --predicate 'subsystem == "io.huylg.folio" AND category == "scroll"'
 which is how to read them from a bundled copy, launched with `open --env FOLIO_SCROLL_TRACE=1
 build/Folio.app`. With the variable unset none of this runs — the hooks are a flag check each.
 
+Two phases deserve a word. `layoutText` is where the text is painted: under a layer-backed window,
+which the reading pane is, TextKit 2 renders in `layout()` and `drawText` is a no-op — and every
+prose view on screen re-runs that layout on every scroll event, so its row scales with the number
+of views live rather than with the document. `populateVisible`, `visibleSections`, `captureAnchor`
+and `headingProbe` look at a screenful of placements, found by search, however long the document
+is; a row there that grows with the document is a regression.
+
+Without a trackpad — on a CI runner, or in an agent's session — the same trace comes from scripted
+gestures:
+
+```bash
+FOLIO_SCROLL_HARNESS=1 FOLIO_HARNESS_PARAGRAPHS=6000 \
+    swift test -c release -Xswiftc -enable-testing --filter ScrollHarness 2>&1 | grep '^\['
+```
+
 ## Layout
 
 ```

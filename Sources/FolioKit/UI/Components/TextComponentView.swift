@@ -108,8 +108,17 @@ public final class TextComponentView: NSTextView, DimmableComponent {
         }
     }
 
-    /// Traced, because a scroll is mostly drawing: the work the viewport handler does is only
-    /// half a frame, and the other half is every prose view on screen painting its text again.
+    /// Traced, because a scroll is mostly the display pass: the viewport handler is a fraction
+    /// of a frame, and the rest is the prose on screen being painted. Where that happens
+    /// depends on the window. In a layer-backed one — the reading pane sits under a
+    /// layer-backed view — TextKit 2 paints in `layout()`, which every text view in a scroll
+    /// view re-runs on each scroll, and `draw` is a no-op a microsecond long; in a plain window,
+    /// or an offscreen `cacheDisplay`, the text is drawn here. Both are traced so the summary
+    /// says where the text went whichever path it took.
+    public override func layout() {
+        ScrollTrace.shared.measure(.layoutText) { super.layout() }
+    }
+
     public override func draw(_ dirtyRect: NSRect) {
         ScrollTrace.shared.measure(.drawText) { super.draw(dirtyRect) }
     }
