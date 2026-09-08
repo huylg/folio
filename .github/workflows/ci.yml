@@ -43,6 +43,38 @@ jobs:
       - name: Test
         run: make test
 
+      - name: Collect test crash reports
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          import time
+
+          reports = Path.home() / "Library/Logs/DiagnosticReports"
+          output = Path("build/test-crashes")
+          output.mkdir(parents=True, exist_ok=True)
+          # ReportCrash can finish writing after xctest has exited.
+          for attempt in range(10):
+              crashes = [path for path in reports.glob("*")
+                         if path.name.lower().startswith(("xctest", "foliopackagetests"))
+                         and path.suffix in (".ips", ".crash")]
+              if crashes:
+                  for path in crashes:
+                      shutil.copy2(path, output / path.name)
+                  break
+              time.sleep(1)
+          PY
+
+      - name: Upload test crash reports
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-crashes
+          path: build/test-crashes
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Package the app
         run: |
           make app
