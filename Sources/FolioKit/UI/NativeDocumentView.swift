@@ -845,7 +845,11 @@ public final class NativeDocumentView: NSView {
         guard let component = stackView.componentIndex(atY: probe) else { return nil }
         // Above the first heading — inside the frontmatter card, say — the first section is
         // still the one being read. Reporting nothing there left a stale highlight behind.
-        return headingComponents.last { $0.component <= component }?.heading ?? 0
+        // Read off the per-component table rather than searched for: this runs on every
+        // scroll event, and a book has hundreds of headings to search back through.
+        let heading = headingForComponent.indices.contains(component)
+            ? headingForComponent[component] : -1
+        return heading >= 0 ? heading : 0
     }
 
     private func reportDestinationHeading(forComponent index: Int) {
