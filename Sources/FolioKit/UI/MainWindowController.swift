@@ -8,6 +8,11 @@ import AppKit
 final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate, NSMenuItemValidation {
 
     // MARK: State
+    public override func performTextFinderAction(_ sender: Any?) {
+        guard currentDocument != nil else { return }
+        documentVC.readingPane?.performTextFinderAction(sender)
+    }
+
     private(set) var currentDocument: MarkdownDocument?
     private var presentationMode = false
 
@@ -601,6 +606,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// Unavailable commands are disabled, not hidden, per the HIG.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
+        case #selector(performTextFinderAction(_:)):
+            guard currentDocument != nil, let action = NSTextFinder.Action(rawValue: menuItem.tag) else { return false }
+            return documentVC.readingPane?.findController.validate(action) ?? false
         case #selector(toggleSidebar(_:)):
             menuItem.title = sidebarCollapsed ? "Show Sidebar" : "Hide Sidebar"
             return showsDocumentScreen

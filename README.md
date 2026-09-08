@@ -3,8 +3,8 @@
 A Markdown reader for macOS, built for reading long documents rather than editing short ones.
 
 Folio is native AppKit — no web view. A document becomes a list of components, each with its own
-view and its own text selection, and the reading pane lays them out as however many pages of a
-spread the width will hold.
+view, while selection and Find share one document-wide text index. The reading pane lays the
+components out as however many pages of a spread the width will hold.
 
 ## What it does
 
@@ -17,6 +17,22 @@ spread the width will hold.
 - Long tables paginate by row with the header repeated. Anything too big to break spans the spread.
 - A dashed accent rule marks each page boundary, with a marker where a section carries on overleaf.
 - Serif, sans, or monospaced; three line widths; three densities. Text size up to twice the default.
+
+**Selecting and finding**
+
+- Drag a continuous selection through prose, code, table cells, frontmatter, and source cards,
+  including across columns and pages. Drag beyond the viewport to keep scrolling the selection.
+- Double-click selects a word; triple-click selects a paragraph. Shift-click and Shift-arrow keys
+  extend the selection. ⌘A selects the whole document, including text currently offscreen.
+- ⌘C copies readable text: prose, unfenced code, tab-separated tables, and frontmatter fields.
+  Images and rendered diagrams select as whole objects and copy their Markdown/source substitutes.
+  Repeated table headers are copied once; buttons, reading statistics, and run output are excluded.
+- ⌘F opens the native Find bar; ⌘G and ⇧⌘G move between matches; ⌘E searches the selected text.
+  Find includes offscreen document text and displayed source cards, but excludes hidden image paths
+  and rendered-diagram source. Displayed image captions remain searchable. The app is read-only.
+- A preview stays nonactivating while hovered. Click its text to select and copy within the preview;
+  it stays open while focused. Escape or an outside click dismisses it. Find targets the main document.
+- Run consoles keep their own local selection and copying.
 
 **Getting around**
 
@@ -172,7 +188,7 @@ Sources/FolioKit/
   UI/           the window, the welcome screen, the reading pane, the component stack, the outline
 Sources/Folio/  the executable
 Tools/          the app icon, drawn in CoreGraphics
-Tests/          230-odd tests, mostly against real windows
+Tests/          layout and interaction tests, mostly against real windows
 sample-vault/   documents to read while working on it
 ```
 

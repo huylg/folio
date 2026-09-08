@@ -12,7 +12,12 @@ import AppKit
 /// directly makes the geometry deterministic, and — more importantly — makes it *identical* to
 /// the geometry `attachmentBounds` measured, so the reserved height always matches what is
 /// drawn.
-public final class TableBlockView: BlockCardView {
+public final class TableBlockView: BlockCardView, DocumentSurfaceProvider, SelectionPaintOwner {
+    weak var selectionStack: DocumentStackView?
+    private var textLayouts: [SelectionTextLayout] = []
+    private var textSurfaces: [TextSelectionSurface] = []
+    private var textWidth: CGFloat = -1
+    func releaseSelectionLayouts() { textLayouts = []; textSurfaces = []; textWidth = -1 }
 
     private let spec: TableSpec
     private let metrics: DocumentMetrics
@@ -53,12 +58,12 @@ public final class TableBlockView: BlockCardView {
     private let fixedColumnWidths: [CGFloat]?
 
     public init(spec: TableSpec, metrics: DocumentMetrics, host: BlockHost?,
-                columnWidths: [CGFloat]? = nil) {
+                columnWidths: [CGFloat]? = nil, numericColumns: Set<Int>? = nil) {
         self.spec = spec
         self.metrics = metrics
         self.host = host
         self.fixedColumnWidths = columnWidths
-        let numeric = Self.numericColumns(in: spec)
+        let numeric = numericColumns ?? Self.numericColumns(in: spec)
         self.numericColumns = numeric
         self.alignments = (0..<max(1, spec.columnCount)).map { column in
             let declared = spec.alignments.indices.contains(column)
@@ -72,10 +77,7 @@ public final class TableBlockView: BlockCardView {
         super.init(frame: .zero)
 
         setAccessibilityRole(.table)
-        setAccessibilityLabel(
-            "Table, \(spec.rows.count) rows, \(spec.columnCount) columns. "
-                + spec.tabSeparated.replacingOccurrences(of: "\t", with: ", ")
-        )
+        setAccessibilityLabel("Table, \(spec.rows.count) rows, \(spec.columnCount) columns")
     }
 
     required public init?(coder: NSCoder) { fatalError("not supported") }
@@ -91,9 +93,9 @@ public final class TableBlockView: BlockCardView {
         if let cachedGeometry, cachedGeometry.width == width { return cachedGeometry }
         let columns = fixedColumnWidths
             ?? Self.columnWidths(spec: spec, width: width, metrics: metrics)
-        var heights = [Self.rowHeight(cells: spec.header, columnWidths: columns, metrics: metrics)]
+        var heights = [Self.rowHeight(cells: spec.header, columnWidths: columns, metrics: metrics, tabularColumns: numericColumns)]
         for row in spec.rows {
-            heights.append(Self.rowHeight(cells: row, columnWidths: columns, metrics: metrics))
+            heights.append(Self.rowHeight(cells: row, columnWidths: columns, metrics: metrics, tabularColumns: numericColumns))
         }
         let result = Geometry(width: width, columns: columns, rowHeights: heights)
         cachedGeometry = result
@@ -279,7 +281,7 @@ public final class TableBlockView: BlockCardView {
     /// Measured rather than assumed: at a narrow measure a header cell can wrap to two lines,
     /// and a flat row height left the last row hanging outside the card.
     static func rowHeight(
-        cells: [TableSpec.Cell], columnWidths: [CGFloat], metrics: DocumentMetrics
+        cells: [TableSpec.Cell], columnWidths: [CGFloat], metrics: DocumentMetrics, tabularColumns: Set<Int> = []
     ) -> CGFloat {
         let line = lineHeight(metrics: metrics)
         var tallest = line
@@ -288,11 +290,8 @@ public final class TableBlockView: BlockCardView {
             guard cell.text.length > 0 else { continue }
             let columnWidth = spanning ? columnWidths.reduce(0, +) : columnWidths[index]
             let available = max(1, columnWidth - cellPadding.left - cellPadding.right)
-            let bounds = cell.text.boundingRect(
-                with: NSSize(width: available, height: .greatestFiniteMagnitude),
-                options: [.usesLineFragmentOrigin, .usesFontLeading]
-            )
-            tallest = max(tallest, max(line, bounds.height.rounded(.up)))
+            let text = Self.styled(cell.text, tabular: !spanning && tabularColumns.contains(index))
+            tallest = max(tallest, TextMeasurer.shared.height(of: text, width: available))
         }
         return (tallest + cellPadding.top + cellPadding.bottom).rounded()
     }
@@ -301,9 +300,10 @@ public final class TableBlockView: BlockCardView {
     public static func height(spec: TableSpec, width: CGFloat, metrics: DocumentMetrics,
                               columnWidths fixed: [CGFloat]? = nil) -> CGFloat {
         let columns = fixed ?? columnWidths(spec: spec, width: width, metrics: metrics)
-        var total = rowHeight(cells: spec.header, columnWidths: columns, metrics: metrics)
+        let numeric = numericColumns(in: spec)
+        var total = rowHeight(cells: spec.header, columnWidths: columns, metrics: metrics, tabularColumns: numeric)
         for row in spec.rows {
-            total += rowHeight(cells: row, columnWidths: columns, metrics: metrics)
+            total += rowHeight(cells: row, columnWidths: columns, metrics: metrics, tabularColumns: numeric)
         }
         return total
     }
@@ -312,9 +312,10 @@ public final class TableBlockView: BlockCardView {
     public static func rowHeights(spec: TableSpec, width: CGFloat, metrics: DocumentMetrics)
         -> (columns: [CGFloat], header: CGFloat, rows: [CGFloat]) {
         let columns = columnWidths(spec: spec, width: width, metrics: metrics)
+        let numeric = numericColumns(in: spec)
         return (columns,
-                rowHeight(cells: spec.header, columnWidths: columns, metrics: metrics),
-                spec.rows.map { rowHeight(cells: $0, columnWidths: columns, metrics: metrics) })
+                rowHeight(cells: spec.header, columnWidths: columns, metrics: metrics, tabularColumns: numeric),
+                spec.rows.map { rowHeight(cells: $0, columnWidths: columns, metrics: metrics, tabularColumns: numeric) })
     }
 
     public override func sizeThatFits(width: CGFloat) -> CGSize {
@@ -327,7 +328,6 @@ public final class TableBlockView: BlockCardView {
         guard spec.columnCount > 0, rect.width > 0 else { return }
         let layout = geometry(for: rect.width)
         let rowOrigins = layout.rowOrigins
-        let columnOrigins = layout.columnOrigins
         let hairline = CardChrome.hairlineWidth(in: self)
 
         // Header band, then a stripe on every other body row. A hairline between every row
@@ -346,49 +346,62 @@ public final class TableBlockView: BlockCardView {
         NSRect(x: 0, y: layout.rowHeights[0] - hairline,
                width: rect.width, height: hairline).fill()
 
-        for (rowIndex, cells) in ([spec.header] + spec.rows).enumerated() {
-            let y = rowOrigins[rowIndex]
-            let height = layout.rowHeights[rowIndex]
-            let spanning = Self.spans(cells, columnCount: layout.columns.count)
-            for (columnIndex, cell) in cells.enumerated()
-            where columnIndex < layout.columns.count {
-                guard cell.text.length > 0 else { continue }
-                let columnWidth = spanning
-                    ? layout.columns.reduce(0, +)
-                    : layout.columns[columnIndex]
-                let box = NSRect(
-                    x: columnOrigins[columnIndex] + Self.cellPadding.left,
-                    y: y + Self.cellPadding.top,
-                    width: columnWidth - Self.cellPadding.left - Self.cellPadding.right,
-                    height: height - Self.cellPadding.top - Self.cellPadding.bottom
-                )
-                draw(cell.text, in: box, column: spanning ? nil : columnIndex)
-            }
+        _ = documentSurfaces()
+        for (surface, text) in zip(textSurfaces, textLayouts) {
+            if let selectionStack { surface.paint(controller: selectionStack.selectionController) }
+            text.draw(at: surface.frame.origin)
         }
     }
 
-    /// A `nil` column means the cell spans the table, and takes the natural alignment.
-    private func draw(_ text: NSAttributedString, in box: NSRect, column: Int?) {
+    func documentSurfaces() -> [TextSelectionSurface] {
+        guard textWidth != bounds.width else { return textSurfaces }
+        textWidth = bounds.width
+        textLayouts = []; textSurfaces = []
+        let layout = geometry(for: bounds.width)
+        let rowOrigins = layout.rowOrigins, columnOrigins = layout.columnOrigins
+        for (row, cells) in ([spec.header] + spec.rows).enumerated() {
+            let spanning = Self.spans(cells, columnCount: layout.columns.count)
+            for (column, cell) in cells.enumerated() where column < layout.columns.count {
+                let width = spanning ? layout.columns.reduce(0, +) : layout.columns[column]
+                let box = NSRect(x: columnOrigins[column] + Self.cellPadding.left,
+                    y: rowOrigins[row] + Self.cellPadding.top,
+                    width: max(1, width - Self.cellPadding.left - Self.cellPadding.right),
+                    height: layout.rowHeights[row] - Self.cellPadding.top - Self.cellPadding.bottom)
+                let styled = Self.styled(cell.text,
+                    alignment: spanning ? .natural : alignments[column],
+                    tabular: !spanning && numericColumns.contains(column))
+                let text = SelectionTextLayout(styled)
+                text.layout(width: box.width)
+                textLayouts.append(text)
+                textSurfaces.append(TextSelectionSurface(view: self, part: .cell(row: row, column: column),
+                    frame: box, manager: text.manager, attributed: styled))
+            }
+        }
+        return textSurfaces
+    }
+
+    private static func styled(_ text: NSAttributedString, alignment: NSTextAlignment = .natural,
+                               tabular: Bool = false) -> NSAttributedString {
         let styled = NSMutableAttributedString(attributedString: text)
         let full = NSRange(location: 0, length: styled.length)
         let style = NSMutableParagraphStyle()
-        style.alignment = column.flatMap { alignments.indices.contains($0) ? alignments[$0] : nil }
-            ?? .natural
+        style.alignment = alignment
         style.lineBreakMode = .byWordWrapping
         styled.addAttribute(.paragraphStyle, value: style, range: full)
-
-        if let column, numericColumns.contains(column) {
-            // Proportional digits are different widths, so a column of numbers comes out ragged
-            // however it is aligned.
+        if tabular {
             styled.enumerateAttribute(.font, in: full) { value, range, _ in
                 guard let font = value as? NSFont else { return }
                 styled.addAttribute(.font, value: Self.tabularFigures(font), range: range)
             }
         }
-        styled.draw(with: box, options: [.usesLineFragmentOrigin, .usesFontLeading])
+        return styled
     }
 
     // MARK: Links
+
+    public override func accessibilityChildren() -> [Any]? {
+        documentSurfaces().filter { selectionStack == nil || $0.isBound }.map(\.accessibilityElement)
+    }
 
     /// Cells are drawn rather than hosted in labels, so link clicks are hit-tested against the
     /// same geometry that drew them. Whole-cell granularity: a cell is small, and the
@@ -421,7 +434,7 @@ public final class TableBlockView: BlockCardView {
                width: layout.columns[column], height: layout.rowHeights[row])
     }
 
-    private func linkDestination(at point: NSPoint) -> String? {
+    func linkDestination(at point: NSPoint) -> String? {
         guard bounds.width > 0 else { return nil }
         let layout = geometry(for: bounds.width)
         for (rowIndex, cells) in ([spec.header] + spec.rows).enumerated() {

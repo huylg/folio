@@ -194,7 +194,9 @@ final class ScrollLookupTests: XCTestCase {
                 let expected = Set(all.filter {
                     $0.frame.maxY >= wanted.minY && $0.frame.minY <= wanted.maxY
                 }.map { NSStringFromRect($0.frame) })
-                let actual = Set(stack.subviews.map { NSStringFromRect($0.frame) })
+                // The document-wide selection overlay is decoration, not a vended component.
+                let actual = Set(stack.subviews.filter { !($0 is DocumentSelectionOverlay) }
+                    .map { NSStringFromRect($0.frame) })
                 XCTAssertEqual(actual, expected, "at y \(y) in \(columns) column(s)")
             }
         }

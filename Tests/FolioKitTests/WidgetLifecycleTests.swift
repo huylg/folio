@@ -230,8 +230,8 @@ final class ComponentSelectionTests: XCTestCase {
 
         let component = try XCTUnwrap(components.first { $0.string.count > 20 })
         component.selectAll(nil)
-        XCTAssertEqual(component.selectedRange().length, component.string.count,
-                       "⌘A inside a component selected nothing")
+        XCTAssertEqual(view.stackView.selectionController.selectedRange, view.stackView.selectionController.index.fullRange,
+                       "⌘A inside prose must select the whole document")
         XCTAssertFalse(component.isEditable, "the reading pane must stay read-only")
     }
 
@@ -241,26 +241,30 @@ final class ComponentSelectionTests: XCTestCase {
         let card = try XCTUnwrap(view.stackView.subviews.compactMap { $0 as? CodeComponentView }.first)
         let body = try XCTUnwrap(card.subviews.compactMap { $0 as? TextComponentView }.first)
         body.selectAll(nil)
-        XCTAssertGreaterThan(body.selectedRange().length, 0, "code did not select")
+        XCTAssertEqual(view.stackView.selectionController.selectedRange, view.stackView.selectionController.index.fullRange)
         XCTAssertTrue(card.source.contains("def route") || card.source.contains("func dispatch"),
                       "the card's copy button would copy the wrong source")
     }
 
-    /// Focusing one component releases the others, so only one selection is ever live.
-    func testOnlyOneComponentHoldsASelection() throws {
+    /// Components share one selection even when focus moves between their views.
+    func testComponentsShareDocumentSelection() throws {
         let view = try pane()
         let components = textComponents(in: view).filter { $0.string.count > 20 }
-        guard components.count >= 2 else { return XCTFail("need two prose components") }
-
+        XCTAssertGreaterThanOrEqual(components.count, 2)
         components[0].selectAll(nil)
-        XCTAssertGreaterThan(components[0].selectedRange().length, 0)
-
+        let selected = view.stackView.selectionController.selectedRange
         view.window?.makeFirstResponder(components[1])
-        components[1].selectAll(nil)
-        XCTAssertEqual(components[0].selectedRange().length, 0,
-                       "the previous component kept its selection")
-        XCTAssertGreaterThan(components[1].selectedRange().length, 0)
+        XCTAssertEqual(view.stackView.selectionController.selectedRange, selected)
+        XCTAssertEqual(selected, view.stackView.selectionController.index.fullRange)
     }
+
+    func testStandaloneTextStillSelectsLocally() {
+        let text = TextComponentView()
+        text.configure(with: NSAttributedString(string: "Console output"), kind: .paragraph)
+        text.selectAll(nil)
+        XCTAssertEqual(text.selectedRange(), NSRange(location: 0, length: 14))
+    }
+
 }
 
 /// Spins the run loop until `condition` holds, or the deadline passes.

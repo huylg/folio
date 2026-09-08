@@ -7,9 +7,29 @@ import AppKit
 /// the viewport — which is what lets a widget be an ordinary view with an ordinary `layout()`
 /// instead of a text attachment measured before it exists.
 ///
-/// Two things it deliberately does *not* do, both inherited from the text engine it replaced:
-/// selection across component boundaries, and `NSTextFinder`.
+/// A separate logical text index coordinates selection and Find across the component views.
 public final class DocumentStackView: NSView {
+
+    let selectionController = DocumentSelectionController()
+    lazy var selectionNavigation = NSTextSelectionNavigation(dataSource: selectionDataSource)
+    private lazy var selectionDataSource = DocumentSelectionDataSource(stack: self)
+    var onSelectionFocus: (() -> Void)?
+    var onFindAction: ((Any?) -> Void)?
+    var validateFindAction: ((NSTextFinder.Action) -> Bool)?
+    var onSelectionGeometryChange: (() -> Void)?
+    var selectionViewport: (() -> NSRect)?
+    var selectionVisibleRect: NSRect { selectionViewport?() ?? visibleRect }
+    private var selectionTimer: Timer?
+    private var dragPoint: NSPoint?
+    private var pressPoint: NSPoint?
+    private var pendingLink: (String, NSView)?
+    private var dragged = false
+    private var applicationObserver: NSObjectProtocol?
+    private var windowFocusObservers: [NSObjectProtocol] = []
+    private var surfaceBindings: [Int: [TextSelectionSurface]] = [:]
+    private var placementsByColumn: [[Int]] = []
+    private var temporarySelectionPlacements: [Int] = []
+    private let selectionOverlay = DocumentSelectionOverlay()
 
     public weak var host: BlockHost?
     public weak var linkDelegate: ComponentLinkDelegate?
@@ -245,6 +265,36 @@ public final class DocumentStackView: NSView {
     public init(metrics: DocumentMetrics) {
         self.metrics = metrics
         super.init(frame: .zero)
+        selectionOverlay.stack = self
+        addSubview(selectionOverlay)
+        selectionController.onChange = { [weak self] in self?.selectionChanged() }
+        applicationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.endSelectionDrag(); self?.selectionController.isActive = false }
+    }
+
+    deinit {
+        selectionTimer?.invalidate()
+        if let applicationObserver { NotificationCenter.default.removeObserver(applicationObserver) }
+        windowFocusObservers.forEach(NotificationCenter.default.removeObserver)
+    }
+
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        windowFocusObservers.forEach(NotificationCenter.default.removeObserver)
+        windowFocusObservers = []
+        guard let window else { endSelectionDrag(); return }
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+            windowFocusObservers.append(NotificationCenter.default.addObserver(
+                forName: name, object: window, queue: .main
+            ) { [weak self, weak window] notification in
+                guard let self else { return }
+                let responder = window?.firstResponder
+                self.selectionController.isActive = notification.name == NSWindow.didBecomeKeyNotification
+                    && (responder === self || (responder as? TextComponentView)?.selectionOwner === self)
+                if notification.name == NSWindow.didResignKeyNotification { self.endSelectionDrag() }
+            })
+        }
     }
 
     required public init?(coder: NSCoder) { fatalError("not supported") }
@@ -252,6 +302,9 @@ public final class DocumentStackView: NSView {
     // MARK: Content
 
     public func setComponents(_ components: [DocumentComponent], metrics: DocumentMetrics) {
+        endSelectionDrag()
+        selectionController.replace(DocumentTextIndex(components: components),
+                                    identity: runContext?.documentURL)
         self.components = components
         self.metrics = metrics
         spacingCache = Array(repeating: nil, count: components.count)
@@ -270,6 +323,8 @@ public final class DocumentStackView: NSView {
     }
 
     private func recycleEverything() {
+        surfaceBindings = [:]
+        temporarySelectionPlacements = []
         for (_, view) in live { retire(view) }
         for (_, view) in parked { retire(view) }
         live = [:]
@@ -282,6 +337,8 @@ public final class DocumentStackView: NSView {
     /// new placement, and retires whatever it does not claim. Must run against the *old*
     /// placement arrays — the keys come from them.
     private func parkLiveViews() {
+        surfaceBindings = [:]
+        temporarySelectionPlacements = []
         for (placement, view) in live {
             let key = retainKey(for: placement)
             if parked[key] == nil { parked[key] = view } else { retire(view) }
@@ -326,6 +383,7 @@ public final class DocumentStackView: NSView {
     }
 
     private func remeasure(width: CGFloat) {
+        selectionNavigation.flushLayoutCache()
         measuredWidth = width
         measuredColumns = max(1, columnCount)
 
@@ -523,7 +581,14 @@ public final class DocumentStackView: NSView {
         contentHeight = ((spreadTops.last ?? 0) + lastSpreadHeight
                             + contentInsets.bottom).rounded(.up)
         releasePlacementViews()
+        placementsByColumn = Array(repeating: [], count: max(1, columnCount))
+        for placement in frames.indices {
+            if spansSpread[placement] {
+                for column in placementsByColumn.indices { placementsByColumn[column].append(placement) }
+            } else { placementsByColumn[columnOfPlacement[placement]].append(placement) }
+        }
         applyHeight()
+        onSelectionGeometryChange?()
         needsDisplay = true
     }
 
@@ -745,6 +810,7 @@ public final class DocumentStackView: NSView {
         let total = contentHeight + trailingParkingSpace
         guard frame.height != total else { return }
         setFrameSize(NSSize(width: frame.width, height: total))
+        selectionOverlay.frame = bounds
     }
 
     /// The gap above and below each component, memoized: the values only change with the
@@ -976,22 +1042,33 @@ public final class DocumentStackView: NSView {
             guard frame.maxY >= wanted.minY, frame.minY <= wanted.maxY else { continue }
             keep.insert(placement)
             let view = live[placement] ?? install(placement, at: frame)
-            if view.frame != frame { view.frame = frame }
+            if view.frame != frame {
+                view.frame = frame
+                view.needsLayout = true
+            }
+            bindSelection(placement, view: view)
         }
 
         for (placement, view) in live where !keep.contains(placement) {
             retire(view)
             live.removeValue(forKey: placement)
+            surfaceBindings.removeValue(forKey: placement)
         }
 
         // Whatever a reflow parked and this pass did not reclaim is out of the viewport now.
         for (_, view) in parked { retire(view) }
         parked = [:]
+        selectionOverlay.frame = bounds
+        addSubview(selectionOverlay, positioned: .above, relativeTo: nil)
     }
 
     private func install(_ placement: Int, at frame: NSRect) -> NSView {
         let view = ScrollTrace.shared.measure(.installView) { makeView(for: placement) }
+        // Placements own the outer frame. Cards may use constraints for their header,
+        // but those constraints must not resize the card independently of pagination.
+        view.translatesAutoresizingMaskIntoConstraints = true
         view.frame = frame
+        view.needsLayout = true
         (view as? DimmableComponent)?.isDimmed =
             focusedComponent != nil && focusedComponent != componentOfPlacement[placement]
         // A reclaimed parked view never left the hierarchy; re-adding it would only churn.
@@ -1044,7 +1121,8 @@ public final class DocumentStackView: NSView {
                           alignments: spec.alignments)
             } ?? spec
             let view = TableBlockView(spec: sliced, metrics: metrics, host: host,
-                                      columnWidths: tableColumnsOfPlacement[placement])
+                                      columnWidths: tableColumnsOfPlacement[placement],
+                                      numericColumns: TableBlockView.numericColumns(in: spec))
             retained[key] = view
             return view
 
@@ -1060,6 +1138,7 @@ public final class DocumentStackView: NSView {
 
     private func retire(_ view: NSView) {
         view.removeFromSuperview()
+        (view as? TableBlockView)?.releaseSelectionLayouts()
         guard let text = view as? TextComponentView,
               textPool.count < Self.textPoolLimit else { return }
         textPool.append(text)
@@ -1154,12 +1233,325 @@ public final class DocumentStackView: NSView {
 
     // MARK: Selection
 
+    private func bindSelection(_ placement: Int, view: NSView) {
+        let component = componentOfPlacement[placement]
+        let index = selectionController.index
+        let surfaces: [TextSelectionSurface]
+        if let code = view as? CodeComponentView {
+            // A retained card can move from a column to a full-width spread. Settle its
+            // text container before selection or drawing asks TextKit for geometry.
+            code.layoutSubtreeIfNeeded()
+            code.body.selectionOwner = self
+            surfaces = code.body.documentSurfaces()
+        } else if let text = view as? TextComponentView {
+            text.selectionOwner = self
+            surfaces = text.documentSurfaces()
+        } else if let provider = view as? DocumentSurfaceProvider {
+            view.layoutSubtreeIfNeeded()
+            surfaces = provider.documentSurfaces()
+        } else if let existing = surfaceBindings[placement] {
+            existing.first?.frame = view.bounds
+            surfaces = existing
+        } else {
+            surfaces = [TextSelectionSurface(view: view, part: .object, frame: view.bounds)]
+        }
+        for surface in surfaces {
+            surface.stack = self
+            var part = surface.part
+            surface.localStart = 0
+            var sliceStart = 0
+            if case .cell(let row, let column) = part, let rows = rowsOfPlacement[placement] {
+                if row == 0 && rows.lowerBound > 0 { surface.isBound = false; continue }
+                part = .cell(row: row == 0 ? 0 : rows.lowerBound + row, column: column)
+            }
+            if case .body = part, case .text = components[component].content,
+               let rows = rowsOfPlacement[placement],
+               let slice = components[component].partRange(rows) { sliceStart = slice.location }
+            guard let segment = index.segment(component: component, part: part) else {
+                surface.isBound = false; continue
+            }
+            let available = surface.attributed?.length ?? segment.range.length
+            surface.range = NSRange(location: segment.range.location + sliceStart,
+                length: max(0, min(available, segment.range.length - sliceStart)))
+            surface.isBound = true
+        }
+        surfaceBindings[placement] = surfaces
+        (view as? SelectionPaintOwner)?.selectionStack = self
+    }
+
+    func selectionSurfaces() -> [TextSelectionSurface] {
+        // Frames inside a card can change without replacing the card.
+        for (placement, view) in live { bindSelection(placement, view: view) }
+        return surfaceBindings.keys.sorted().flatMap { surfaceBindings[$0] ?? [] }.filter(\.isBound)
+    }
+
+    private func selectionChanged() {
+        for view in live.values {
+            view.needsDisplay = true
+            if let code = view as? CodeComponentView { code.body.needsDisplay = true }
+        }
+        selectionOverlay.needsDisplay = true
+        NSAccessibility.post(element: self, notification: .selectedTextChanged)
+        for surface in surfaceBindings.values.joined() where surface.isBound {
+            NSAccessibility.post(element: surface.accessibilityElement, notification: .selectedTextChanged)
+        }
+    }
+
+    /// Binary search within a column; placement order is reading order, not global y order.
+    private func placement(at point: NSPoint) -> Int? {
+        guard !frames.isEmpty, !placementsByColumn.isEmpty else { return nil }
+        let geometry = columnGeometry()
+        let column = min(columnCount - 1, max(0, Int(((point.x - geometry.originX(0)
+            + Self.gutter / 2) / max(1, geometry.columnWidth + Self.gutter)).rounded(.down))))
+        let candidates = placementsByColumn[max(0, column)]
+        guard !candidates.isEmpty else { return frames.count - 1 }
+        var low = 0, high = candidates.count
+        while low < high {
+            let mid = (low + high) / 2
+            if frames[candidates[mid]].maxY < point.y { low = mid + 1 } else { high = mid }
+        }
+        if low == candidates.count { return candidates.last }
+        if low > 0, point.y < frames[candidates[low]].minY,
+           point.y - frames[candidates[low - 1]].maxY < frames[candidates[low]].minY - point.y {
+            return candidates[low - 1]
+        }
+        return candidates[low]
+    }
+
+    func surface(at point: NSPoint) -> TextSelectionSurface? {
+        guard var placement = placement(at: point) else { return nil }
+        if selectionController.index.componentRanges[componentOfPlacement[placement]].length == 0 {
+            // Generated reading statistics have no selection surface. A drag crossing this
+            // gap resolves to the next real block (or the preceding block at document end).
+            var next = placement + 1
+            while next < frames.count && selectionController.index.componentRanges[componentOfPlacement[next]].length == 0 { next += 1 }
+            if next < frames.count { placement = next }
+            else {
+                while placement > 0 && selectionController.index.componentRanges[componentOfPlacement[placement]].length == 0 { placement -= 1 }
+            }
+        }
+        let view = live[placement] ?? install(placement, at: frame(ofPlacement: placement))
+        view.layoutSubtreeIfNeeded()
+        bindSelection(placement, view: view)
+        return surfaceBindings[placement]?.filter(\.isBound).min { a, b in
+            func distance(_ surface: TextSelectionSurface) -> CGFloat {
+                guard let owner = surface.view else { return .greatestFiniteMagnitude }
+                let rect = owner.convert(surface.frame, to: self)
+                let dx = max(0, max(rect.minX - point.x, point.x - rect.maxX))
+                let dy = max(0, max(rect.minY - point.y, point.y - rect.maxY))
+                // Choose the row before choosing its cell.
+                return dy * 10000 + dx
+            }
+            return distance(a) < distance(b)
+        }
+    }
+
+    func selectionOffset(at point: NSPoint) -> Int {
+        guard point.y >= contentInsets.top else { return 0 }
+        guard point.y <= contentHeight - contentInsets.bottom else { return selectionController.index.length }
+        guard let surface = surface(at: point), let view = surface.view else { return 0 }
+        let local = view.convert(point, from: self)
+        if local.y < surface.frame.minY { return surface.range.location }
+        if local.y > surface.frame.maxY { return NSMaxRange(surface.range) }
+        return surface.offset(at: local)
+    }
+
+    func surface(containing offset: Int, reveal: Bool = false) -> TextSelectionSurface? {
+        let index = selectionController.index
+        guard let segment = index.segment(at: offset) else { return nil }
+        if segment.isSeparator {
+            let next = NSMaxRange(segment.range)
+            if next < index.length { return surface(containing: next, reveal: reveal) }
+            if segment.range.location > 0 { return surface(containing: segment.range.location - 1, reveal: reveal) }
+            return nil
+        }
+        let component = segment.id.component
+        guard firstPlacement.indices.contains(component) else { return nil }
+        let start = firstPlacement[component]
+        let end = component + 1 < firstPlacement.count ? firstPlacement[component + 1] : frames.count
+        var target = end - 1
+        for placement in start..<end {
+            if let rows = rowsOfPlacement[placement] {
+                switch segment.id.part {
+                case .cell(let row, _):
+                    if row == 0 ? rows.lowerBound == 0 : rows.contains(row - 1) { target = placement; break }
+                case .body:
+                    if let slice = components[component].partRange(rows),
+                       offset - segment.range.location < NSMaxRange(slice) { target = placement; break }
+                default: break
+                }
+            }
+        }
+        if reveal { scrollToVisible(frame(ofPlacement: target)); populateVisible() }
+        let wasMissing = live[target] == nil
+        let view = live[target] ?? install(target, at: frame(ofPlacement: target))
+        if wasMissing && !frame(ofPlacement: target).intersects(visibleRect.insetBy(dx: 0, dy: -Self.overscan)) {
+            temporarySelectionPlacements.append(target)
+            while temporarySelectionPlacements.count > 8 {
+                let old = temporarySelectionPlacements.removeFirst()
+                if let oldView = live[old], !oldView.frame.intersects(visibleRect.insetBy(dx: 0, dy: -Self.overscan)) {
+                    retire(oldView); live.removeValue(forKey: old); surfaceBindings.removeValue(forKey: old)
+                }
+            }
+        }
+        view.layoutSubtreeIfNeeded()
+        bindSelection(target, view: view)
+        let surfaces = surfaceBindings[target]?.filter(\.isBound) ?? []
+        return surfaces.first { $0.range.location <= offset && offset < NSMaxRange($0.range) }
+            ?? surfaces.last
+    }
+
+    func selectionRects(_ range: NSRange) -> [NSRect] {
+        selectionSurfaces().flatMap { surface -> [NSRect] in
+            guard let view = surface.view else { return [] }
+            return surface.rects(for: range).map { view.convert($0, to: self) }
+        }
+    }
+
+    func revealSelection(_ range: NSRange) {
+        guard let surface = surface(containing: range.location, reveal: true), let view = surface.view else { return }
+        let rect = surface.rects(for: NSRange(location: range.location, length: min(1, range.length))).first
+            ?? surface.frame
+        let occlusion = max(0, selectionVisibleRect.minY - visibleRect.minY)
+        var target = view.convert(rect, to: self).insetBy(dx: 0, dy: -12)
+        target.origin.y -= occlusion; target.size.height += occlusion
+        scrollToVisible(target)
+        populateVisible()
+    }
+
+    public override var acceptsFirstResponder: Bool { true }
+    public override func becomeFirstResponder() -> Bool {
+        selectionController.isActive = true
+        return true
+    }
+    public override func resignFirstResponder() -> Bool {
+        selectionController.isActive = false
+        return true
+    }
+
+    public override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let hit = super.hitTest(point) else { return nil }
+        var candidate: NSView? = hit
+        while let view = candidate, view !== self {
+            if view is NSButton || view is RunOutputPanel { return hit }
+            candidate = view.superview
+        }
+        return self
+    }
+
+    public override func mouseDown(with event: NSEvent) {
+        endSelectionDrag()
+        onSelectionFocus?()
+        window?.makeFirstResponder(self)
+        let point = convert(event.locationInWindow, from: nil)
+        pressPoint = event.locationInWindow
+        dragPoint = event.locationInWindow
+        dragged = false
+        if !event.modifierFlags.contains(.shift), event.clickCount == 1 {
+            pendingLink = selectionLink(at: point)
+        }
+        selectionController.begin(at: selectionOffset(at: point),
+            extending: event.modifierFlags.contains(.shift), clicks: event.clickCount,
+            navigation: selectionNavigation)
+        if !event.modifierFlags.contains(.shift), let surface = surface(at: point), surface.manager == nil {
+            selectionController.selectObject(surface.range)
+        }
+        selectionController.isDragging = true
+        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in self?.autoscrollSelection() }
+        RunLoop.main.add(timer, forMode: .common)
+        selectionTimer = timer
+    }
+
+    public override func mouseDragged(with event: NSEvent) {
+        guard selectionController.isDragging else { return }
+        dragPoint = event.locationInWindow
+        if let pressPoint, hypot(event.locationInWindow.x - pressPoint.x,
+                                 event.locationInWindow.y - pressPoint.y) >= 3 { dragged = true }
+        guard dragged else { return }
+        pendingLink = nil
+        selectionController.extend(to: selectionOffset(at: convert(event.locationInWindow, from: nil)),
+                                   navigation: selectionNavigation)
+    }
+
+    public override func mouseUp(with event: NSEvent) {
+        let link = !dragged ? pendingLink : nil
+        endSelectionDrag()
+        if let (destination, view) = link {
+            let point = convert(event.locationInWindow, from: nil)
+            if selectionLink(at: point)?.0 == destination {
+                if let linkDelegate { linkDelegate.component(view, didClickLink: destination) }
+                else { host?.blockRequestsOpen(destination) }
+            }
+        }
+    }
+
+    private func selectionLink(at point: NSPoint) -> (String, NSView)? {
+        if let surface = surface(at: point), let view = surface.view,
+           let link = surface.link(at: view.convert(point, from: self)) { return (link, view) }
+        // Repeated headers are decoration for selection, but retain their authored links.
+        if let placement = placement(at: point), let table = live[placement] as? TableBlockView,
+           let rows = rowsOfPlacement[placement], rows.lowerBound > 0,
+           let surfaces = surfaceBindings[placement] {
+            let local = table.convert(point, from: self)
+            if surfaces.contains(where: { !$0.isBound && $0.frame.contains(local) }),
+               let link = table.linkDestination(at: local) { return (link, table) }
+        }
+        return nil
+    }
+
+    func autoscrollSelection() {
+        guard selectionController.isDragging, let dragPoint, let scroll = enclosingScrollView else { return }
+        let point = convert(dragPoint, from: nil)
+        let visible = selectionVisibleRect
+        let distance = point.y < visible.minY ? point.y - visible.minY
+            : point.y > visible.maxY ? point.y - visible.maxY : 0
+        guard distance != 0 else { return }
+        dragged = true; pendingLink = nil
+        let step = min(24, max(-24, distance / 5))
+        let y = min(max(0, bounds.height - scroll.contentView.bounds.height),
+                    max(-scroll.contentInsets.top, scroll.contentView.bounds.minY + step))
+        scroll.contentView.scroll(to: NSPoint(x: scroll.contentView.bounds.minX, y: y))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        populateVisible()
+        selectionController.extend(to: selectionOffset(at: convert(dragPoint, from: nil)),
+                                   navigation: selectionNavigation)
+    }
+
+    func endSelectionDrag() {
+        selectionTimer?.invalidate(); selectionTimer = nil
+        selectionController.isDragging = false
+        dragPoint = nil; pressPoint = nil; pendingLink = nil
+    }
+
+    @objc public func copy(_ sender: Any?) {
+        guard selectionController.selectedRange.length > 0 else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(selectionController.selectedText, forType: .string)
+    }
+    public override func selectAll(_ sender: Any?) {
+        window?.makeFirstResponder(self)
+        selectionController.selectAll()
+    }
+    public override func performTextFinderAction(_ sender: Any?) { onFindAction?(sender) }
+
+    public override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = NSMenu()
+        let item = menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
+        item.target = self
+        return menu
+    }
+
+    public override func keyDown(with event: NSEvent) { interpretKeyEvents([event]) }
+
+    public override func cancelOperation(_ sender: Any?) {
+        endSelectionDrag()
+        selectionController.clear()
+    }
+
     /// Clears the selection everywhere except in `keeper`.
     ///
-    /// Selection is per component, so focusing one has to release the last one — otherwise two
-    /// blocks look selected at once and ⌘C is ambiguous about which it takes. The walk is over
-    /// the view tree rather than `live`, because a code card's body is a text view *inside* a
-    /// component, not a component itself.
+    /// Used by standalone text such as a console. Document selection lives in the controller
+    /// and remains available as an inactive selection when a console takes focus.
     public func clearSelections(except keeper: NSView? = nil) {
         func clear(_ view: NSView) {
             if let text = view as? TextComponentView, text !== keeper {

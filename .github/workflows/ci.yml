@@ -43,6 +43,62 @@ jobs:
       - name: Test
         run: make test
 
+      - name: Collect test crash reports
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          import time
+
+          reports = Path.home() / "Library/Logs/DiagnosticReports"
+          output = Path("build/test-crashes")
+          output.mkdir(parents=True, exist_ok=True)
+          # ReportCrash can finish writing after xctest has exited.
+          for attempt in range(10):
+              crashes = [path for path in reports.glob("*")
+                         if path.name.lower().startswith(("xctest", "foliopackagetests"))
+                         and path.suffix in (".ips", ".crash")]
+              if crashes:
+                  for path in crashes:
+                      shutil.copy2(path, output / path.name)
+                  break
+              time.sleep(1)
+          PY
+
+      - name: Capture test backtrace
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          bundle = Path(".build/debug/FolioPackageTests.xctest")
+          if bundle.exists():
+              output = Path("build/test-crashes")
+              output.mkdir(parents=True, exist_ok=True)
+              xctest = subprocess.check_output(["xcrun", "--find", "xctest"], text=True).strip()
+              # Hosted runners may disable ReportCrash. Run the failing process under
+              # LLDB as a fallback; this does not change the original test result.
+              with (output / "backtrace.log").open("w") as log:
+                  try:
+                      subprocess.run(["xcrun", "lldb", "--batch", "-o", "run",
+                                      "-o", "thread backtrace all", "--", xctest,
+                                      str(bundle.resolve())], stdout=log, stderr=subprocess.STDOUT,
+                                     timeout=180)
+                  except subprocess.TimeoutExpired:
+                      log.write("\nDiagnostic test run timed out.\n")
+          PY
+
+      - name: Upload test crash reports
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-crashes
+          path: build/test-crashes
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Package the app
         run: |
           make app

@@ -27,7 +27,7 @@ public struct BuiltDocument {
     public let blocks: [BlockRecord]
 
     /// What the reading pane actually renders: one component per top-level piece of the
-    /// document, each with its own view and its own selection.
+    /// document, each with its own view. DocumentTextIndex supplies shared selection offsets.
     ///
     /// Derived from `blocks`, so the two can never disagree about where a block starts.
     public let components: [DocumentComponent]

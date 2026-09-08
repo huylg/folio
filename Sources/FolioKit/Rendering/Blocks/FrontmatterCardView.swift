@@ -1,188 +1,129 @@
 import AppKit
 
-/// The YAML frontmatter card shown above the document title.
-public final class FrontmatterCardView: BlockCardView {
-
+/// Frontmatter text uses the same TextKit layout for painting, measurement and selection.
+public final class FrontmatterCardView: BlockCardView, DocumentSurfaceProvider, SelectionPaintOwner {
     private let frontmatter: Frontmatter
     private let metrics: DocumentMetrics
     private weak var host: BlockHost?
+    weak var selectionStack: DocumentStackView?
+    private var cachedWidth: CGFloat = -1
+    private var records: [Record] = []
+    private var layouts: [SelectionTextLayout] = []
+    private var surfaces: [TextSelectionSurface] = []
 
-    private static let padding = NSEdgeInsets(top: 14, left: 16, bottom: 14, right: 16)
+    private static let padding: CGFloat = 16
     private static let keyColumnWidth: CGFloat = 88
     private static let columnSpacing: CGFloat = 16
     private static let rowSpacing: CGFloat = 6
-    private static let headerSpacing: CGFloat = 10
 
-    /// The value labels, so `layout()` can tell them how wide they may be.
-    private var valueLabels: [LinkLabel] = []
+    private struct Record {
+        let part: DocumentTextIndex.Part
+        let text: NSAttributedString
+        let frame: NSRect
+        var pill: NSColor? = nil
+    }
 
     public init(frontmatter: Frontmatter, metrics: DocumentMetrics, host: BlockHost?) {
-        self.frontmatter = frontmatter
-        self.metrics = metrics
-        self.host = host
+        self.frontmatter = frontmatter; self.metrics = metrics; self.host = host
         super.init(frame: .zero)
-
-        let header = NSStackView()
-        header.orientation = .horizontal
-        header.spacing = 8
-        header.translatesAutoresizingMaskIntoConstraints = false
-
-        let chevron = NSImageView()
-        chevron.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)
-        chevron.contentTintColor = Ink.tertiary
-        chevron.symbolConfiguration = NSImage.SymbolConfiguration(
-            pointSize: metrics.ramp.caption().pointSize, weight: .semibold
-        )
-        header.addArrangedSubview(chevron)
-
-        let title = NSTextField(labelWithString: "FRONTMATTER")
-        title.font = NSFont.systemFont(ofSize: metrics.ramp.caption().pointSize, weight: .semibold)
-        title.textColor = Ink.tertiary
-        // The design's 0.04em tracking on the uppercase label.
-        title.attributedStringValue = NSAttributedString(
-            string: "FRONTMATTER",
-            attributes: [
-                .font: NSFont.systemFont(ofSize: metrics.ramp.caption().pointSize, weight: .semibold),
-                .foregroundColor: Ink.tertiary,
-                .kern: metrics.ramp.caption().pointSize * 0.04,
-            ]
-        )
-        header.addArrangedSubview(title)
-
-        let grid = NSGridView()
-        grid.translatesAutoresizingMaskIntoConstraints = false
-        grid.rowSpacing = Self.rowSpacing
-        grid.columnSpacing = Self.columnSpacing
-
-        for key in frontmatter.orderedKeys {
-            guard let value = frontmatter.values[key] else { continue }
-            let keyLabel = NSTextField(labelWithString: key)
-            keyLabel.font = TypeRamp.fixedPitchMono(ofSize: metrics.ramp.caption().pointSize)
-            keyLabel.textColor = Ink.tertiary
-
-            let valueView: NSView
-            if Self.isTagKey(key), case .list(let items) = value {
-                valueView = Self.tagRow(items, metrics: metrics)
-            } else {
-                let label = LinkLabel(attributed: NSAttributedString(
-                    string: value.display,
-                    attributes: [.font: metrics.ramp.callout(), .foregroundColor: Ink.heading]
-                ))
-                label.host = host
-                valueLabels.append(label)
-                valueView = label
-            }
-            grid.addRow(with: [keyLabel, valueView])
-        }
-        // Only valid once a row exists — an empty NSGridView has no columns.
-        if grid.numberOfColumns > 0 {
-            grid.column(at: 0).xPlacement = .leading
-            grid.column(at: 0).width = Self.keyColumnWidth
-        }
-
-        addSubview(header)
-        addSubview(grid)
-
-        let p = Self.padding
-        NSLayoutConstraint.activate([
-            header.topAnchor.constraint(equalTo: topAnchor, constant: p.top),
-            header.leadingAnchor.constraint(equalTo: leadingAnchor, constant: p.left),
-            grid.topAnchor.constraint(equalTo: header.bottomAnchor, constant: Self.headerSpacing),
-            grid.leadingAnchor.constraint(equalTo: leadingAnchor, constant: p.left),
-            grid.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -p.right),
-            grid.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -p.bottom),
-            grid.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.keyColumnWidth),
-        ])
-
         setAccessibilityRole(.group)
-        setAccessibilityLabel("Frontmatter, \(frontmatter.orderedKeys.count) fields")
+        setAccessibilityLabel("Frontmatter")
     }
-
     required public init?(coder: NSCoder) { fatalError("not supported") }
 
-    private static func isTagKey(_ key: String) -> Bool {
-        ["tags", "tag", "keywords"].contains(key)
-    }
-
-    private static func tagRow(_ tags: [String], metrics: DocumentMetrics) -> NSView {
-        let row = NSStackView()
-        row.orientation = .horizontal
-        row.spacing = 6
-        row.translatesAutoresizingMaskIntoConstraints = false
-        for tag in tags {
-            row.addArrangedSubview(TagPillView(tag: tag, metrics: metrics))
-        }
-        return row
-    }
-
-    /// Width a value may occupy: the card less its padding, the key column, and the gutter.
     static func valueWidth(cardWidth: CGFloat) -> CGFloat {
-        max(40, cardWidth - padding.left - padding.right - keyColumnWidth - columnSpacing)
+        max(40, cardWidth - 2 * padding - keyColumnWidth - columnSpacing)
     }
-
-    /// The height one value needs at that width.
-    ///
-    /// Measured with the same kind of label that will draw it, at the same width, so the height
-    /// reserved for the card and the height its content actually takes cannot disagree — a
-    /// disagreement here either clips the last row or leaves a gap under it.
     static func valueHeight(_ text: String, font: NSFont, width: CGFloat) -> CGFloat {
-        let probe = NSTextField(labelWithString: text)
-        probe.font = font
-        probe.lineBreakMode = .byWordWrapping
-        probe.maximumNumberOfLines = 0
-        probe.preferredMaxLayoutWidth = width
-        return probe.fittingSize.height.rounded(.up)
+        TextMeasurer.shared.height(of: attributed(text, font: font, color: Ink.heading), width: width)
     }
-
-    /// Analytic height, so the stack can measure the card without building it.
-    public static func height(
-        frontmatter: Frontmatter,
-        width: CGFloat,
-        metrics: DocumentMetrics
-    ) -> CGFloat {
-        let font = metrics.ramp.callout()
-        let lineHeight = max(
-            (font.ascender - font.descender + font.leading).rounded(),
-            TagPillView.height(metrics: metrics)
-        )
-        let caption = metrics.ramp.caption()
-        let headerHeight = (caption.ascender - caption.descender + caption.leading).rounded()
+    private static func attributed(_ string: String, font: NSFont, color: NSColor) -> NSAttributedString {
+        let style = NSMutableParagraphStyle()
+        style.lineBreakMode = .byWordWrapping
+        return NSAttributedString(string: string, attributes: [
+            .font: font, .foregroundColor: color, .paragraphStyle: style,
+        ])
+    }
+    private static func arrange(_ frontmatter: Frontmatter, width: CGFloat,
+                                metrics: DocumentMetrics) -> (CGFloat, [Record]) {
+        let valueX = padding + keyColumnWidth + columnSpacing
         let available = valueWidth(cardWidth: width)
-
-        // Per row rather than a flat row height: a long value — a subtitle, a list of authors —
-        // wraps, and a flat height had it overflow the card's right padding instead.
-        var rowsHeight: CGFloat = 0
+        let font = metrics.ramp.callout()
+        let caption = metrics.ramp.caption()
+        var y: CGFloat = 14 + (caption.ascender - caption.descender + caption.leading).rounded() + 10
+        var records: [Record] = []
         for key in frontmatter.orderedKeys {
             guard let value = frontmatter.values[key] else { continue }
-            if isTagKey(key), case .list = value {
-                rowsHeight += lineHeight
+            let keyText = attributed(key, font: TypeRamp.fixedPitchMono(ofSize: caption.pointSize), color: Ink.tertiary)
+            let keyHeight = TextMeasurer.shared.height(of: keyText, width: keyColumnWidth)
+            records.append(Record(part: .key(key), text: keyText,
+                frame: NSRect(x: padding, y: y, width: keyColumnWidth, height: keyHeight)))
+            var rowHeight = max(keyHeight, TagPillView.height(metrics: metrics))
+            if DocumentTextIndex.isTagKey(key), case .list(let tags) = value {
+                var x: CGFloat = 0, tagY: CGFloat = 0
+                var lineHeight: CGFloat = 0
+                for (i, tag) in tags.enumerated() {
+                    let colors = TagPalette.pill(for: tag)
+                    let text = attributed(tag, font: NSFont.systemFont(ofSize: caption.pointSize, weight: .medium),
+                                          color: colors.text)
+                    let natural = TextMeasurer.shared.size(of: text, width: available).width
+                    let tagWidth = min(available, natural + 16)
+                    if x > 0 && x + tagWidth > available { x = 0; tagY += lineHeight + 4; lineHeight = 0 }
+                    let height = TextMeasurer.shared.height(of: text, width: max(1, tagWidth - 16))
+                    records.append(Record(part: .tag(key, i), text: text,
+                        frame: NSRect(x: valueX + x + 8, y: y + tagY + 2,
+                                      width: max(1, tagWidth - 16), height: height), pill: colors.fill))
+                    lineHeight = max(lineHeight, height + 4)
+                    x += tagWidth + 6
+                }
+                rowHeight = max(rowHeight, tagY + lineHeight)
             } else {
-                rowsHeight += max(lineHeight,
-                                  valueHeight(value.display, font: font, width: available))
+                let text = attributed(value.display, font: font, color: Ink.heading)
+                let height = TextMeasurer.shared.height(of: text, width: available)
+                records.append(Record(part: .value(key), text: text,
+                    frame: NSRect(x: valueX, y: y, width: available, height: height)))
+                rowHeight = max(rowHeight, height)
             }
+            y += rowHeight + rowSpacing
         }
-        let rows = CGFloat(frontmatter.orderedKeys.count)
-        return padding.top + headerHeight + headerSpacing
-            + rowsHeight + max(0, rows - 1) * rowSpacing
-            + padding.bottom
+        return (y - (records.isEmpty ? 0 : rowSpacing) + 14, records)
     }
-
-    public override func layout() {
-        super.layout()
-        // A multi-line `NSTextField` reports a single-line intrinsic width until it is told what
-        // width to wrap at. Without this the label kept its full natural width, the grid's
-        // trailing constraint could not be satisfied, and the value ran out through the card's
-        // right padding.
-        let available = Self.valueWidth(cardWidth: bounds.width)
-        for label in valueLabels where label.preferredMaxLayoutWidth != available {
-            label.preferredMaxLayoutWidth = available
-        }
-        layoutSubtreeIfNeeded()
+    public static func height(frontmatter: Frontmatter, width: CGFloat, metrics: DocumentMetrics) -> CGFloat {
+        arrange(frontmatter, width: width, metrics: metrics).0
     }
-
     public override func sizeThatFits(width: CGFloat) -> CGSize {
-        CGSize(width: width,
-               height: Self.height(frontmatter: frontmatter, width: width, metrics: metrics))
+        CGSize(width: width, height: Self.height(frontmatter: frontmatter, width: width, metrics: metrics))
+    }
+    func documentSurfaces() -> [TextSelectionSurface] {
+        guard cachedWidth != bounds.width else { return surfaces }
+        cachedWidth = bounds.width
+        records = Self.arrange(frontmatter, width: bounds.width, metrics: metrics).1
+        layouts = records.map { record in
+            let layout = SelectionTextLayout(record.text)
+            layout.layout(width: record.frame.width)
+            return layout
+        }
+        surfaces = zip(records, layouts).map { record, layout in
+            TextSelectionSurface(view: self, part: record.part, frame: record.frame,
+                                 manager: layout.manager, attributed: record.text)
+        }
+        return surfaces
+    }
+    public override func drawCardContents(in rect: NSRect) {
+        Self.attributed("›  FRONTMATTER", font: metrics.ramp.caption(), color: Ink.tertiary)
+            .draw(at: NSPoint(x: Self.padding, y: 14))
+        _ = documentSurfaces()
+        for (i, surface) in surfaces.enumerated() {
+            if let color = records[i].pill {
+                color.setFill()
+                NSBezierPath(roundedRect: surface.frame.insetBy(dx: -8, dy: -2), xRadius: 8, yRadius: 8).fill()
+            }
+            if let selectionStack { surface.paint(controller: selectionStack.selectionController) }
+            layouts[i].draw(at: surface.frame.origin)
+        }
+    }
+    public override func accessibilityChildren() -> [Any]? {
+        documentSurfaces().map(\.accessibilityElement)
     }
 }
 

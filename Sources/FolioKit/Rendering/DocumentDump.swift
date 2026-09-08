@@ -63,7 +63,7 @@ public enum DocumentDump {
         }
         out.append("")
 
-        // Components are what the pane renders: one view each, one selection each. Dumping
+        // Components are what the pane renders: one view each, sharing the document selection. Dumping
         // them alongside the blocks is what catches a grouping mistake — a list that split into
         // one component per item, say — without rendering anything.
         out.append("COMPONENTS  (\(built.components.count))")

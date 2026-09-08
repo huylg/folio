@@ -28,14 +28,15 @@ public protocol ComponentLinkPeekDelegate: AnyObject {
 
 /// One prose component: a paragraph, heading, list, quote, or caption.
 ///
-/// An `NSTextView` per component rather than one for the whole document. Selection, the caret's
-/// word and line granularity, VoiceOver's static-text navigation and the link cursor all still
-/// come from AppKit — they are simply scoped to the block, which is the unit a reader selects
-/// in anyway. What the document-wide text view also brought, and this does not, is selection
-/// that spans blocks and `NSTextFinder`.
+/// TextKit supplies glyph layout and local geometry. When bound to a document stack, input,
+/// highlighting, Copy and Select All use its shared selection controller. Unbound views,
+/// including run consoles, retain NSTextView's ordinary local selection behavior.
 ///
-/// The view is recycled: `configure(with:kind:)` is the whole of its state.
+/// The view is recycled: configure clears its old selection binding and hover state.
 public final class TextComponentView: NSTextView, DimmableComponent {
+
+    weak var selectionOwner: DocumentStackView?
+    private var selectionSurface: TextSelectionSurface?
 
     public weak var componentDelegate: ComponentLinkDelegate?
     public weak var peekDelegate: ComponentLinkPeekDelegate?
@@ -97,6 +98,8 @@ public final class TextComponentView: NSTextView, DimmableComponent {
         ScrollTrace.shared.measure(.configureText) {
             Self.configureCount += 1
             self.kind = kind
+            selectionOwner = nil
+            selectionSurface = nil
             // The view is recycled; a hover from its previous life must not outlive the
             // content it was hovering on.
             cancelLinkHover()
@@ -140,6 +143,9 @@ public final class TextComponentView: NSTextView, DimmableComponent {
 
     public override func drawBackground(in rect: NSRect) {
         super.drawBackground(in: rect)
+        if let selectionOwner {
+            documentSurfaces().first?.paint(controller: selectionOwner.selectionController)
+        }
         guard case .blockQuote = kind else { return }
         // The bar sits at the component's leading edge; the paragraph style's own indent is
         // what keeps the text clear of it.
@@ -152,13 +158,14 @@ public final class TextComponentView: NSTextView, DimmableComponent {
 
     // MARK: Selection
 
-    /// Releases every other component's selection when this one takes focus.
-    ///
-    /// Selection is per component, and AppKit keeps a text view's selection drawn — greyed —
-    /// after it stops being first responder. Two blocks would look selected at once, and ⌘C
-    /// would take only one of them.
+    /// Bound text uses document selection; standalone console text clears only native local
+    /// selections elsewhere, preserving the document controller's inactive range.
     public override func becomeFirstResponder() -> Bool {
         guard super.becomeFirstResponder() else { return false }
+        if let selectionOwner {
+            selectionOwner.selectionController.isActive = true
+            return true
+        }
         var ancestor = superview
         while let view = ancestor {
             if let stack = view as? DocumentStackView {
@@ -235,6 +242,7 @@ public final class TextComponentView: NSTextView, DimmableComponent {
 
     /// Split from the event so tests can drive the hover without synthesizing tracking events.
     func hoverMoved(to point: NSPoint) {
+        guard selectionOwner?.selectionController.isDragging != true else { cancelLinkHover(); return }
         guard let peekDelegate else { return }
         // Still on the link it is already hovering (or timing toward): nothing changes.
         if let hoverLink, hoverLink.rect.contains(point) { return }
@@ -337,6 +345,77 @@ public final class TextComponentView: NSTextView, DimmableComponent {
     /// layout and clips a last line.
     public static func height(of attributed: NSAttributedString, width: CGFloat) -> CGFloat {
         TextMeasurer.shared.height(of: attributed, width: width)
+    }
+}
+
+extension TextComponentView: DocumentSurfaceProvider {
+    public override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if let selectionOwner, [#selector(copy(_:)), #selector(selectAll(_:))].contains(item.action) {
+            return selectionOwner.validateUserInterfaceItem(item)
+        }
+        if item.action == #selector(performTextFinderAction(_:)) {
+            var ancestor = superview
+            while let view = ancestor {
+                if let stack = view as? DocumentStackView { return stack.validateUserInterfaceItem(item) }
+                ancestor = view.superview
+            }
+        }
+        return super.validateUserInterfaceItem(item)
+    }
+
+    public override func accessibilitySelectedTextRange() -> NSRange {
+        guard let owner = selectionOwner, let surface = documentSurfaces().first else {
+            return super.accessibilitySelectedTextRange()
+        }
+        let range = NSIntersectionRange(surface.range, owner.selectionController.selectedRange)
+        return NSRange(location: max(0, range.location - surface.range.location), length: range.length)
+    }
+
+    public override func accessibilitySelectedText() -> String? {
+        guard let owner = selectionOwner, let surface = documentSurfaces().first else {
+            return super.accessibilitySelectedText()
+        }
+        return owner.selectionController.index.copyText(in:
+            NSIntersectionRange(surface.range, owner.selectionController.selectedRange))
+    }
+
+    public override func setAccessibilitySelectedTextRange(_ range: NSRange) {
+        guard let owner = selectionOwner, let surface = documentSurfaces().first else {
+            super.setAccessibilitySelectedTextRange(range); return
+        }
+        let start = min(surface.range.length, max(0, range.location))
+        owner.selectionController.setRange(NSRange(location: surface.range.location + start,
+            length: min(range.length, surface.range.length - start)))
+    }
+
+    func documentSurfaces() -> [TextSelectionSurface] {
+        if selectionSurface == nil {
+            selectionSurface = TextSelectionSurface(view: self, part: .body, frame: bounds,
+                manager: textLayoutManager, attributed: textContentStorage?.textStorage)
+        }
+        selectionSurface?.frame = bounds
+        return selectionSurface.map { [$0] } ?? []
+    }
+
+    public override func copy(_ sender: Any?) {
+        if let selectionOwner { selectionOwner.copy(sender) } else { super.copy(sender) }
+    }
+
+    public override func selectAll(_ sender: Any?) {
+        if let selectionOwner { selectionOwner.selectAll(sender) } else { super.selectAll(sender) }
+    }
+
+    public override func mouseDown(with event: NSEvent) {
+        if let selectionOwner { selectionOwner.mouseDown(with: event) } else { super.mouseDown(with: event) }
+    }
+
+    public override func performTextFinderAction(_ sender: Any?) {
+        var ancestor = superview
+        while let view = ancestor {
+            if let stack = view as? DocumentStackView { stack.performTextFinderAction(sender); return }
+            ancestor = view.superview
+        }
+        super.performTextFinderAction(sender)
     }
 }
 

@@ -6,7 +6,8 @@ import WebKit
 /// as long as the hover lasts.
 ///
 /// A borderless child window rather than an `NSPopover`, which always draws an anchor arrow
-/// and its own bubble chrome. The panel never activates and never becomes key.
+/// and its own bubble chrome. Hover does not take focus; clicking document text makes the
+/// panel key for selection and copying.
 ///
 /// Its content is a `DocumentStackView` — the reading pane's own engine, given the section's
 /// own components — so every block is drawn by the code that draws it on the page: a table is
@@ -65,6 +66,33 @@ final class PeekPreviewPanel {
     }
 
     private var panel: NSPanel?
+    private weak var ownerWindow: NSWindow?
+    private weak var previousResponder: NSResponder?
+    private var takingSelectionFocus = false
+    var isInteracting: Bool { takingSelectionFocus || panel?.isKeyWindow == true || stackView.selectionController.isDragging }
+
+    private func focusSelection() {
+        guard let panel, !panel.isKeyWindow else { return }
+        previousResponder = ownerWindow?.firstResponder
+        takingSelectionFocus = true
+        panel.makeKey()
+        panel.makeFirstResponder(stackView)
+        takingSelectionFocus = false
+    }
+
+    private func forwardFind(_ sender: Any?) {
+        guard let window = ownerWindow else { return }
+        hide()
+        window.makeKey()
+        if let controller = window.windowController as? MainWindowController {
+            controller.performTextFinderAction(sender)
+        } else {
+            func pane(in view: NSView) -> NativeDocumentView? {
+                (view as? NativeDocumentView) ?? view.subviews.lazy.compactMap { pane(in: $0) }.first
+            }
+            if let content = window.contentView { pane(in: content)?.performTextFinderAction(sender) }
+        }
+    }
     private let card = PreviewCardView()
     private let titleField = NSTextField(labelWithString: "")
     private let separator = NSBox()
@@ -96,6 +124,7 @@ final class PeekPreviewPanel {
         _ section: SectionPreview, title: String,
         anchoredTo anchor: NSRect, in window: NSWindow
     ) {
+        guard !isShown || !isInteracting else { return }
         let panel = self.panel ?? makePanel()
         self.panel = panel
 
@@ -141,6 +170,7 @@ final class PeekPreviewPanel {
     /// vault entirely. The header starts as the host and takes the page's title once it loads,
     /// the way the section card's header names its section.
     func showWeb(_ url: URL, anchoredTo anchor: NSRect, in window: NSWindow) {
+        guard !isShown || !isInteracting else { return }
         let panel = self.panel ?? makePanel()
         self.panel = panel
 
@@ -170,6 +200,7 @@ final class PeekPreviewPanel {
     /// entrance — or, if the card is already up, moves it there.
     private func present(cardSize: NSSize, anchoredTo anchor: NSRect, in window: NSWindow) {
         guard let panel else { return }
+        ownerWindow = window
         let frame = clampedFrame(for: cardSize, besideAnchor: anchor, on: window.screen)
 
         if isShown {
@@ -238,6 +269,12 @@ final class PeekPreviewPanel {
     func hide() {
         guard isShown, let panel else { return }
         isShown = false
+        stackView.endSelectionDrag()
+        if panel.isKeyWindow {
+            ownerWindow?.makeKey()
+            ownerWindow?.makeFirstResponder(previousResponder)
+        }
+        previousResponder = nil
         unwatch()
         // A page that keeps loading — or playing — behind an ordered-out panel is pure waste.
         webView?.stopLoading()
@@ -295,13 +332,23 @@ final class PeekPreviewPanel {
         for name in [NSWindow.didResizeNotification, NSWindow.didResignKeyNotification] {
             windowObservers.append(center.addObserver(
                 forName: name, object: window, queue: .main
-            ) { [weak self] _ in
-                self?.onDismissRequest?()
+            ) { [weak self] note in
+                guard let self else { return }
+                if note.name == NSWindow.didResignKeyNotification && self.isInteracting { return }
+                self.onDismissRequest?()
             })
         }
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard event.keyCode == 53 else { return event }  // Escape
-            self?.onDismissRequest?()
+        windowObservers.append(center.addObserver(forName: NSApplication.didResignActiveNotification,
+            object: nil, queue: .main) { [weak self] _ in self?.onDismissRequest?() })
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown]) { [weak self] event in
+            guard let self, self.isShown else { return event }
+            if event.type == .leftMouseDown {
+                if event.window !== self.panel { self.onDismissRequest?() }
+                return event
+            }
+            guard event.window === self.panel || event.window === window else { return event }
+            guard event.keyCode == 53 else { return event }
+            self.onDismissRequest?()
             return nil
         }
     }
@@ -318,7 +365,7 @@ final class PeekPreviewPanel {
     // MARK: Construction
 
     private func makePanel() -> NSPanel {
-        let panel = NSPanel(
+        let panel = SelectionPreviewWindow(
             contentRect: NSRect(x: 0, y: 0, width: Self.cardWidth, height: 100),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
@@ -329,14 +376,20 @@ final class PeekPreviewPanel {
         panel.hasShadow = true
         panel.isReleasedWhenClosed = false
         // The panel absorbs clicks on itself so a click into the card cannot fall through to
-        // whatever sits beneath it. Non-activating, so even an absorbed click never moves key
-        // or focus.
+        // whatever sits beneath it. Hover leaves focus alone; selecting text explicitly
+        // makes this panel key.
         panel.ignoresMouseEvents = false
         panel.animationBehavior = .none
 
         // The reading pane's engine, drawing the section's own components. The card supplies
         // its own chrome, so the page's top and bottom breathing room is dropped — see
         // `DocumentStackView.contentInsets`.
+        stackView.onSelectionFocus = { [weak self] in self?.focusSelection() }
+        stackView.onFindAction = { [weak self] sender in self?.forwardFind(sender) }
+        stackView.validateFindAction = { [weak self] action in
+            guard self?.ownerWindow != nil else { return false }
+            return [.showFindInterface, .nextMatch, .previousMatch, .setSearchString].contains(action)
+        }
         stackView.host = host
         stackView.contentInsets = (top: 0, bottom: 0)
         // A run console unfolding inside the card changes a block's height after presentation
@@ -681,4 +734,10 @@ private final class PreviewCardView: NSView {
         super.viewDidChangeEffectiveAppearance()
         needsDisplay = true
     }
+}
+
+/// Hover leaves the owner key; an explicit text click can make the preview key for Copy.
+private final class SelectionPreviewWindow: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
 }

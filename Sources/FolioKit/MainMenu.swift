@@ -1,6 +1,6 @@
 import AppKit
 
-/// Builds the main menu. Read-only by contract: no Edit menu, no save items.
+/// Builds the main menu. Read-only: Edit offers selection, Copy and Find, without save or replacement actions.
 enum MainMenuBuilder {
     static func build() -> NSMenu {
         let main = NSMenu()
@@ -53,15 +53,18 @@ enum MainMenuBuilder {
         edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         edit.addItem(.separator())
 
-        // Find is unavailable while the reading pane is a stack of components: `NSTextFinder`
-        // searches one text view, and there is no longer one text view holding the document.
-        // The items stay, disabled, because the HIG's rule is to disable an unavailable command
-        // rather than hide it — and because a document-wide find over components is the next
-        // piece of work, not a decision to drop the feature.
         let find = NSMenu(title: "Find")
-        for title in ["Find…", "Find Next", "Find Previous", "Use Selection for Find"] {
-            let item = find.addItem(withTitle: title, action: nil, keyEquivalent: "")
-            item.isEnabled = false
+        let findActions: [(String, String, NSTextFinder.Action, NSEvent.ModifierFlags)] = [
+            ("Find…", "f", .showFindInterface, [.command]),
+            ("Find Next", "g", .nextMatch, [.command]),
+            ("Find Previous", "g", .previousMatch, [.command, .shift]),
+            ("Use Selection for Find", "e", .setSearchString, [.command]),
+        ]
+        for (title, key, action, modifiers) in findActions {
+            let item = find.addItem(withTitle: title,
+                action: #selector(NSResponder.performTextFinderAction(_:)), keyEquivalent: key)
+            item.tag = action.rawValue
+            item.keyEquivalentModifierMask = modifiers
         }
 
         let findItem = edit.addItem(withTitle: "Find", action: nil, keyEquivalent: "")

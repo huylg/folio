@@ -12,6 +12,7 @@ public final class DocumentViewController: NSViewController {
     public var onOpenRelativeLink: ((URL, String?) -> Void)?
 
     private var documentView: NativeDocumentView!
+    var readingPane: NativeDocumentView? { documentView }
 
     private var document: MarkdownDocument?
     private var textScale: CGFloat = 1
