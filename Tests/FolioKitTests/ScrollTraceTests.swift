@@ -246,6 +246,8 @@ final class ScrollTraceTests: XCTestCase {
                              "and configures prose for them")
         XCTAssertGreaterThan(summary.phases[.drawText]?.count ?? 0, 0,
                              "the display pass draws prose")
+        XCTAssertGreaterThan(summary.phases[.layoutText]?.count ?? 0, 0,
+                             "and lays it out — where a layer-backed window paints it")
         XCTAssertNil(summary.phases[.measure],
                      "a scroll must never re-measure the document")
     }
