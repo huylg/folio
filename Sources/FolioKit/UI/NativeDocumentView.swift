@@ -25,7 +25,7 @@ public final class NativeDocumentView: NSView {
 
     private var lastReportedVisible: Set<Int> = []
 
-    let scrollView = NSScrollView()
+    let scrollView = DocumentFindScrollView()
     private let effectView = NSVisualEffectView()
     let stackView: DocumentStackView
     lazy var findController = DocumentFindController(stack: stackView, scrollView: scrollView)
@@ -110,7 +110,7 @@ public final class NativeDocumentView: NSView {
         _ = findController
         stackView.selectionViewport = { [weak self] in self?.readerViewport ?? .zero }
         stackView.onSelectionFocus = { [weak self] in self?.dismissLinkPeek() }
-        findController.withFindBarLayout = { [weak self] operation in
+        scrollView.withFindBarLayout = { [weak self] operation in
             guard let self else { return }
             let anchor = self.readingAnchor ?? self.captureScrollAnchor()
             self.isRestoringPosition = true

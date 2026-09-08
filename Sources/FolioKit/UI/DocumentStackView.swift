@@ -938,7 +938,10 @@ public final class DocumentStackView: NSView {
             guard frame.maxY >= wanted.minY, frame.minY <= wanted.maxY else { continue }
             keep.insert(placement)
             let view = live[placement] ?? install(placement)
-            if view.frame != frame { view.frame = frame }
+            if view.frame != frame {
+                view.frame = frame
+                view.needsLayout = true
+            }
             bindSelection(placement, view: view)
         }
 
@@ -957,7 +960,11 @@ public final class DocumentStackView: NSView {
 
     private func install(_ placement: Int) -> NSView {
         let view = ScrollTrace.shared.measure(.installView) { makeView(for: placement) }
+        // Placements own the outer frame. Cards may use constraints for their header,
+        // but those constraints must not resize the card independently of pagination.
+        view.translatesAutoresizingMaskIntoConstraints = true
         view.frame = frame(ofPlacement: placement)
+        view.needsLayout = true
         (view as? DimmableComponent)?.isDimmed =
             focusedComponent != nil && focusedComponent != componentOfPlacement[placement]
         // A reclaimed parked view never left the hierarchy; re-adding it would only churn.
@@ -1121,6 +1128,9 @@ public final class DocumentStackView: NSView {
         let index = selectionController.index
         let surfaces: [TextSelectionSurface]
         if let code = view as? CodeComponentView {
+            // A retained card can move from a column to a full-width spread. Settle its
+            // text container before selection or drawing asks TextKit for geometry.
+            code.layoutSubtreeIfNeeded()
             code.body.selectionOwner = self
             surfaces = code.body.documentSurfaces()
         } else if let text = view as? TextComponentView {

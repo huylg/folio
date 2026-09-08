@@ -255,6 +255,35 @@ final class DocumentSelectionTests: XCTestCase {
         XCTAssertTrue(waitUntil { abs(stack.spreadHeight - before) < 1 })
     }
 
+    func testNativeFindDismissalAnimatesAndCanBeReopened() throws {
+        let pane = try pane("# Heading\n\n" + (1...80).map { "Paragraph \($0)." }.joined(separator: "\n\n"), columns: 2)
+        let scrollView = pane.scrollView, stack = pane.stackView
+        let range = stack.selectionController.index.string.range(of: "Paragraph 20.")
+        stack.selectionController.setRange(range)
+        let height = stack.spreadHeight
+        pane.findController.perform(NSMenuItem.findAction(.showFindInterface))
+        XCTAssertTrue(waitUntil { stack.spreadHeight < height })
+
+        // Done dismisses through the native container, bypassing our command handler.
+        scrollView.isFindBarVisible = false
+        XCTAssertFalse(scrollView.isFindBarVisible)
+        if !Ink.reduceMotion {
+            let departing = try XCTUnwrap(scrollView.departingFindBar)
+            XCTAssertNil(departing.hitTest(.zero), "The closing bar must not intercept input")
+        }
+        pane.findController.perform(NSMenuItem.findAction(.showFindInterface))
+        XCTAssertTrue(scrollView.isFindBarVisible)
+        XCTAssertNil(scrollView.departingFindBar, "Reopening must cancel the old closing image")
+
+        scrollView.isFindBarVisible = false
+        XCTAssertTrue(waitUntil { scrollView.departingFindBar == nil && abs(stack.spreadHeight - height) < 1 })
+        XCTAssertEqual(stack.selectionController.selectedRange, range)
+        let measurements = stack.measuredComponents
+        RunLoop.current.run(until: Date().addingTimeInterval(DocumentFindScrollView.findBarAnimationDuration))
+        XCTAssertFalse(scrollView.isFindBarVisible)
+        XCTAssertEqual(stack.measuredComponents, measurements, "Presentation animation must not keep repaginating")
+    }
+
     func testPreviewGetsIndependentSelectionAndForwardsFind() throws {
         let pane = try pane("# Main\n\nMain document text.")
         let window = try XCTUnwrap(pane.window)
@@ -360,6 +389,70 @@ final class DocumentSelectionTests: XCTestCase {
                 try found.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "\(path)-\(columns)-find.png"))
             }
             pane.findController.perform(NSMenuItem.findAction(.hideFindInterface))
+        }
+    }
+
+    func testCodeCardReflowUpdatesSelectionGeometryBeforeDrawing() throws {
+        let source = (0..<32).map {
+            "    \"activity_\($0)\": { \"learning_seconds\": 8000, \"lessons_completed\": 30, \"last_at\": null },"
+        }.joined(separator: "\n")
+        for columns in [1, 2] {
+            let markdown = "# Code\n\n```json\n{\n\(source)\n}\n```\n\nRules: every score is nullable."
+            let pane = try pane(markdown, columns: columns)
+            let window = try XCTUnwrap(pane.window)
+            let root = NSView(frame: pane.frame)
+            window.contentView = root
+            pane.translatesAutoresizingMaskIntoConstraints = false
+            root.addSubview(pane)
+            NSLayoutConstraint.activate([
+                pane.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+                pane.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+                pane.topAnchor.constraint(equalTo: root.topAnchor),
+                pane.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            ])
+            root.layoutSubtreeIfNeeded()
+            let stack = pane.stackView
+            let code = try XCTUnwrap(pane.built?.components.firstIndex {
+                if case .code = $0.content { return true }; return false
+            })
+            let range = try XCTUnwrap(stack.selectionController.index.segment(component: code, part: .body)).range
+            stack.revealSelection(NSRange(location: range.location, length: 1))
+            pane.layoutSubtreeIfNeeded()
+            let card = try XCTUnwrap(stack.subviews.compactMap { $0 as? CodeComponentView }.first)
+            stack.selectAll(nil)
+            let selection = stack.selectionController.selectedRange
+            let copied = stack.selectionController.index.copyText(in: selection)
+            let bitmap = try XCTUnwrap(pane.bitmapImageRepForCachingDisplay(in: pane.bounds))
+            pane.cacheDisplay(in: pane.bounds, to: bitmap)
+            let manager = try XCTUnwrap(card.body.textLayoutManager)
+            manager.ensureLayout(for: manager.documentRange)
+            XCTAssertLessThanOrEqual(manager.usageBoundsForTextContainer.maxY, card.body.bounds.height + 1)
+            let rects = stack.selectionRects(range)
+            XCTAssertLessThanOrEqual(try XCTUnwrap(rects.map(\.maxY).max()), stack.frame(ofComponent: code).maxY)
+            XCTAssertLessThanOrEqual(stack.frame(ofComponent: code).maxY, stack.frame(ofComponent: code + 1).minY)
+            stack.columnCount = 2
+            stack.spreadHeight = 300
+            stack.ensureMeasured()
+            stack.populateVisible()
+            XCTAssertEqual(card.body.frame.width, stack.frame(ofComponent: code).width,
+                           "Selection must see the newly placed code width before a deferred layout pass")
+            XCTAssertEqual(card.headerAccessories.frame.maxX, card.bounds.maxX - 10, accuracy: 1)
+            for width in [paneWidth(forColumns: 3, metrics: metrics), paneWidth(forColumns: 1, metrics: metrics), paneWidth(forColumns: 2, metrics: metrics)] {
+                pane.window?.setContentSize(NSSize(width: width, height: 900))
+                root.layoutSubtreeIfNeeded()
+                stack.revealSelection(NSRange(location: range.location, length: 1))
+                pane.layoutSubtreeIfNeeded()
+                let card = try XCTUnwrap(stack.subviews.compactMap { $0 as? CodeComponentView }.first)
+                for _ in 0..<10 { _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01)) }
+                XCTAssertEqual(card.frame, stack.frame(ofComponent: code))
+                let manager = try XCTUnwrap(card.body.textLayoutManager)
+                manager.ensureLayout(for: manager.documentRange)
+                XCTAssertEqual(card.body.frame.width, card.frame.width)
+                XCTAssertLessThanOrEqual(manager.usageBoundsForTextContainer.maxY, card.body.bounds.height + 1)
+                XCTAssertLessThanOrEqual(try XCTUnwrap(stack.selectionRects(range).map(\.maxY).max()), stack.frame(ofComponent: code).maxY)
+                XCTAssertEqual(stack.selectionController.selectedRange, selection)
+                XCTAssertEqual(stack.selectionController.index.copyText(in: selection), copied)
+            }
         }
     }
 

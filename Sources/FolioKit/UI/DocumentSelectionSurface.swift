@@ -189,11 +189,7 @@ final class DocumentSelectionOverlay: NSView {
             color.withAlphaComponent(0.4).setFill()
             view.convert(surface.frame, to: self).fill()
         }
-        if selection.isActive, selection.selectedRange.length == 0 {
-            NSColor.textColor.setFill()
-            for rect in stack.selectionRects(selection.selectedRange).prefix(1) {
-                NSRect(x: rect.minX, y: rect.minY, width: 1, height: rect.height).fill()
-            }
-        }
+        // Keep the logical insertion position for keyboard selection without
+        // displaying an editing caret in the read-only document.
     }
 }
