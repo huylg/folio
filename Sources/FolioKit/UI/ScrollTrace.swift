@@ -9,6 +9,9 @@ import os
 /// - Wraps every phase of a viewport change — the view vending pass, the reading-anchor
 ///   capture, the outline report, each text relayout and card draw — in an `os_signpost`
 ///   interval, so Instruments' *os_signpost* track shows exactly what ran inside each frame.
+///   The display pass that follows the handler is traced too — text layout, and the draws —
+///   because under a layer-backed window that is where the text is painted, and a frame can
+///   run late there with the handler itself well under budget.
 /// - Watches the display link for the length of a live scroll and counts the frames that came
 ///   late: a *hitch* is a frame that took more than one and a half refresh intervals, which is
 ///   the thing a reader feels as a stutter. Needs macOS 14 for `NSView.displayLink`; below that
@@ -48,7 +51,11 @@ public final class ScrollTrace {
         case headingProbe
         /// The outline reacting to the report.
         case outlineUpdate
-        /// A prose component drawing.
+        /// A prose component laying out. Under a layer-backed window — the reading pane is one
+        /// — TextKit 2 renders text here rather than in `draw`, so this is where the text is
+        /// actually painted, and every prose view on screen runs it on every scroll.
+        case layoutText
+        /// A prose component drawing. Next to nothing when layer-backed; see `layoutText`.
         case drawText
         /// A card-shaped block drawing.
         case drawCard
@@ -69,6 +76,7 @@ public final class ScrollTrace {
             case .visibleSections: return "visibleSections"
             case .headingProbe: return "headingProbe"
             case .outlineUpdate: return "outlineUpdate"
+            case .layoutText: return "layoutText"
             case .drawText: return "drawText"
             case .drawCard: return "drawCard"
             case .drawPage: return "drawPage"
