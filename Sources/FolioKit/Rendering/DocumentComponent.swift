@@ -10,7 +10,7 @@ import AppKit
 /// every block-level interaction — hover, dimming, a widget that wants to lay itself out — had
 /// to be smuggled past a text engine that owns the geometry.
 ///
-/// A component owns its own view, its own geometry, and its own selection.
+/// A component owns its view and geometry. DocumentTextIndex and the stack coordinate selection.
 public struct DocumentComponent {
 
     public enum Content {
@@ -90,8 +90,8 @@ public struct DocumentComponent {
 ///
 /// The grouping is the whole point: a list is one component rather than one per item, a quote
 /// is one component however many paragraphs it holds, and a fenced code block is one component
-/// rather than a header plus a paragraph per line. Selection, which is per-component, then
-/// covers the units a reader actually thinks in.
+/// rather than a header plus a paragraph per line. Document-wide selection maps these units
+/// into reading order independently of their view lifetimes.
 public enum ComponentSplitter {
 
     public static func components(

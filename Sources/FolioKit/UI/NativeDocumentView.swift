@@ -7,7 +7,7 @@ import AppKit
 /// widgets spliced in as attachments and measured before their views existed, card chrome
 /// reconstructed out of paragraph spacing by custom layout fragments, a scroll height that had
 /// to be grown to a fixed point because TextKit reports only what it has laid out — is gone with
-/// it. What went with it too: selection across block boundaries, and `NSTextFinder`.
+/// it. Selection and Find now use an independent reading-order index over these components.
 public final class NativeDocumentView: NSView {
 
     public weak var linkHandler: DocumentLinkHandler?
@@ -28,6 +28,9 @@ public final class NativeDocumentView: NSView {
     let scrollView = NSScrollView()
     private let effectView = NSVisualEffectView()
     let stackView: DocumentStackView
+    lazy var findController = DocumentFindController(stack: stackView, scrollView: scrollView)
+
+    public override func performTextFinderAction(_ sender: Any?) { findController.perform(sender) }
 
     private(set) var built: BuiltDocument?
     private(set) var metrics: DocumentMetrics
@@ -104,6 +107,28 @@ public final class NativeDocumentView: NSView {
         effectView.state = .followsWindowActiveState
         effectView.translatesAutoresizingMaskIntoConstraints = false
 
+        _ = findController
+        stackView.selectionViewport = { [weak self] in self?.readerViewport ?? .zero }
+        stackView.onSelectionFocus = { [weak self] in self?.dismissLinkPeek() }
+        findController.withFindBarLayout = { [weak self] operation in
+            guard let self else { return }
+            let anchor = self.readingAnchor ?? self.captureScrollAnchor()
+            self.isRestoringPosition = true
+            operation()
+            self.scrollView.tile()
+            self.scrollView.layoutSubtreeIfNeeded()
+            self.applyMeasure()
+            self.restore(anchor)
+            self.isRestoringPosition = false
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.isRestoringPosition = true
+                self.scrollView.layoutSubtreeIfNeeded()
+                self.applyMeasure()
+                self.restore(anchor)
+                self.isRestoringPosition = false
+            }
+        }
         stackView.host = self
         stackView.linkDelegate = self
         stackView.linkPeekDelegate = self
@@ -277,6 +302,15 @@ public final class NativeDocumentView: NSView {
         var rect = clip.bounds
         rect.origin.y += insets.top
         rect.size.height = max(0, rect.height - insets.top - insets.bottom)
+        // Some AppKit versions overlay the native find bar instead of shortening the clip
+        // view. Subtract only its actual overlap, so both native arrangements work.
+        if scrollView.isFindBarVisible, let bar = scrollView.findBarView, bar.superview != nil {
+            let overlap = rect.intersection(clip.convert(bar.bounds, from: bar))
+            if !overlap.isNull, overlap.height > 0 {
+                if overlap.minY <= rect.minY { rect.origin.y += overlap.height }
+                rect.size.height = max(0, rect.height - overlap.height)
+            }
+        }
         return rect
     }
 
@@ -974,7 +1008,7 @@ extension NativeDocumentView: ComponentLinkPeekDelegate {
         guard linkPeek.isShown else { return }
         hoverHideWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            guard let self, linkPeek.isShown, !linkPeek.isPointerInsideCard else { return }
+            guard let self, linkPeek.isShown, !linkPeek.isPointerInsideCard, !linkPeek.isInteracting else { return }
             dismissLinkPeek()
         }
         hoverHideWork = work

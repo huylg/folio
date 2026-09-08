@@ -122,7 +122,7 @@ final class OutlineViewController: NSViewController, NSTableViewDataSource, NSTa
         guard preview.isShown else { return }
         hoverHideWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            guard let self, preview.isShown, !preview.isPointerInsideCard else { return }
+            guard let self, preview.isShown, !preview.isPointerInsideCard, !preview.isInteracting else { return }
             cancelPreview()
         }
         hoverHideWork = work

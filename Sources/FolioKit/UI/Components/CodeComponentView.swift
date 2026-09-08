@@ -26,7 +26,7 @@ public final class CodeComponentView: HeaderedCardView {
     public let source: String
     public weak var host: BlockHost?
 
-    private let body = TextComponentView()
+    let body = TextComponentView()
     private var copyButton: NSButton?
     private var copyResetTimer: Timer?
     private(set) var runButton: NSButton?

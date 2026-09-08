@@ -7,12 +7,14 @@ import AppKit
 /// and verbatim HTML blocks. Unlike the previous HTML version, every one of these gets a
 /// working copy button, because the card owns its own text rather than indexing into a shared
 /// array that the disabled branches silently desynchronised.
-public final class SourceCardView: HeaderedCardView {
+public final class SourceCardView: HeaderedCardView, DocumentSurfaceProvider, SelectionPaintOwner {
+    weak var selectionStack: DocumentStackView? { didSet { body.selectionOwner = selectionStack } }
+    func documentSurfaces() -> [TextSelectionSurface] { body.documentSurfaces() }
 
     public let source: String
     public weak var host: BlockHost?
 
-    private let body = NSTextField(wrappingLabelWithString: "")
+    private let body = TextComponentView()
     private var copyButton: NSButton?
     private var copyResetTimer: Timer?
 
@@ -26,13 +28,7 @@ public final class SourceCardView: HeaderedCardView {
         copyButton = addHeaderButton(symbol: "doc.on.doc", label: "Copy",
                                      target: self, action: #selector(copySource))
 
-        // A wrapping label rather than a nested NSTextView: inside an attachment view the
-        // frame arrives from `attachmentBounds`, and a label sizes deterministically against a
-        // known width, where a text view's intrinsic size fights the constraint and collapses.
-        body.isSelectable = true
-        body.drawsBackground = false
-        body.isBordered = false
-        body.attributedStringValue = Self.attributed(source, metrics: metrics)
+        body.configure(with: Self.attributed(source, metrics: metrics), kind: .paragraph)
         body.translatesAutoresizingMaskIntoConstraints = true
         addSubview(body)
 
@@ -88,14 +84,9 @@ public final class SourceCardView: HeaderedCardView {
     public static func height(source: String, width: CGFloat, metrics: DocumentMetrics) -> CGFloat {
         let padding = CardChrome.bodyPadding
         let available = max(1, width - padding.left - padding.right)
-        let line = metrics.ramp.monoLineHeight()
-        let measured = attributed(source, metrics: metrics).boundingRect(
-            with: NSSize(width: available, height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading]
-        )
-        let lines = max(1, Int((measured.height / line).rounded(.up)))
+        let measured = TextComponentView.height(of: attributed(source, metrics: metrics), width: available)
         return CardChrome.headerHeight + padding.top
-            + CGFloat(lines) * line + padding.bottom
+            + max(metrics.ramp.monoLineHeight(), measured) + padding.bottom
     }
 
     public override func sizeThatFits(width: CGFloat) -> CGSize {
