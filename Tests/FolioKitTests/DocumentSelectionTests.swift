@@ -507,6 +507,19 @@ final class DocumentSelectionTests: XCTestCase {
         controller.perform(NSMenuItem.findAction(.hideFindInterface))
     }
 
+    func testFinderDetachesItsClientWhenControllerIsReleased() throws {
+        let stack = DocumentStackView(metrics: metrics)
+        let scrollView = DocumentFindScrollView()
+        var controller: DocumentFindController? = DocumentFindController(stack: stack, scrollView: scrollView)
+        weak var released = controller
+        // AppKit can retain the finder while finishing asynchronous search feedback.
+        let finder = try XCTUnwrap(controller).finder
+        controller = nil
+        XCTAssertNil(released)
+        XCTAssertNil(finder.client)
+        XCTAssertNil(finder.findBarContainer)
+    }
+
     func testAccessibleTableSelectionUsesLocalRange() throws {
         let pane = try pane("# Table\n\n| Key | Value |\n| --- | --- |\n| Alpha | Beta |")
         let stack = pane.stackView

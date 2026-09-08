@@ -66,6 +66,30 @@ jobs:
               time.sleep(1)
           PY
 
+      - name: Capture test backtrace
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          bundle = Path(".build/debug/FolioPackageTests.xctest")
+          if bundle.exists():
+              output = Path("build/test-crashes")
+              output.mkdir(parents=True, exist_ok=True)
+              xctest = subprocess.check_output(["xcrun", "--find", "xctest"], text=True).strip()
+              # Hosted runners may disable ReportCrash. Run the failing process under
+              # LLDB as a fallback; this does not change the original test result.
+              with (output / "backtrace.log").open("w") as log:
+                  try:
+                      subprocess.run(["xcrun", "lldb", "--batch", "-o", "run",
+                                      "-o", "thread backtrace all", "--", xctest,
+                                      str(bundle.resolve())], stdout=log, stderr=subprocess.STDOUT,
+                                     timeout=180)
+                  except subprocess.TimeoutExpired:
+                      log.write("\nDiagnostic test run timed out.\n")
+          PY
+
       - name: Upload test crash reports
         if: failure()
         uses: actions/upload-artifact@v7

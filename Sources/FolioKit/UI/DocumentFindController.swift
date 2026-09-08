@@ -39,7 +39,17 @@ final class DocumentFindController: NSObject, NSTextFinderClient {
         }
     }
 
-    deinit { if let keyMonitor { NSEvent.removeMonitor(keyMonitor) } }
+    deinit {
+        observation?.invalidate()
+        // NSTextFinder uses non-zeroing `assign` references. AppKit can outlive this
+        // controller while finishing search feedback, so leaving either pointer set
+        // lets a later callback message an already released client or scroll view.
+        finder.client = nil
+        finder.findBarContainer = nil
+        finder.isIncrementalSearchingEnabled = false
+        finder.cancelFindIndicator()
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+    }
     var string: String { snapshot }
     var isSelectable: Bool { true }
     var isEditable: Bool { false }
