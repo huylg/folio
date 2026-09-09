@@ -106,6 +106,9 @@ jobs:
           # is archived before upload.
           ditto -c -k --keepParent build/Folio.app build/Folio.app.zip
 
+      - name: Verify signed update packaging
+        run: python3 Tools/test_sparkle_release.py
+
       - name: Upload the app bundle
         uses: actions/upload-artifact@v7
         with:

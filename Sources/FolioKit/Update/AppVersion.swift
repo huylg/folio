@@ -1,12 +1,7 @@
 import Foundation
 
-/// A released version of the app, as it appears in a bundle's `CFBundleShortVersionString` and in
-/// a GitHub tag.
-///
-/// Deliberately forgiving about what it will parse and deliberately strict about what it will
-/// compare. The two sides of an update check come from different places — a plist written by the
-/// Makefile and a tag typed by hand — and a comparison that returned `false` for a version it
-/// failed to understand would silently pin the app to whatever it is running.
+/// A parsed display version for the app's About/settings text. Sparkle owns update version
+/// comparison and uses CFBundleVersion rather than this type.
 public struct AppVersion: Comparable, Hashable, Codable, CustomStringConvertible, Sendable {
 
     public let major: Int

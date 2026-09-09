@@ -59,8 +59,10 @@ final class UpdateBadgeView: NSButton {
             return ("Update Available: \(release.version)", loud)
         case .downloading(_, let fraction):
             return ("Downloading… \(Int((fraction * 100).rounded()))%", quiet)
-        case .readyToInstall(let release, _):
+        case .readyToInstall(let release):
             return ("Restart to Update to \(release.version)", loud)
+        case .extracting:
+            return ("Preparing Update…", quiet)
         case .installing:
             return ("Installing…", quiet)
         case .failed:

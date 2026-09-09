@@ -20,6 +20,24 @@
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
+    <key>SUPublicEDKey</key>
+    <string>2T2R2iKy8CeS5i4wLE0iyF3GeZYPDV826Ip4KrHD1S8=</string>
+    <key>SUFeedURL</key>
+    <string>https://github.com/huylg/folio/releases/latest/download/appcast.xml</string>
+    <key>SUEnableAutomaticChecks</key>
+    <false/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>3600</integer>
+    <key>SUAutomaticallyUpdate</key>
+    <false/>
+    <key>SUAllowsAutomaticUpdates</key>
+    <false/>
+    <key>SUEnableSystemProfiling</key>
+    <false/>
+    <key>SUShowReleaseNotes</key>
+    <false/>
+    <key>SUVerifyUpdateBeforeExtraction</key>
+    <true/>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
     <key>NSHighResolutionCapable</key>

@@ -25,14 +25,7 @@ final class UpdateBadgeTests: XCTestCase {
     // MARK: Fixtures
 
     private func release(_ version: String) -> Release {
-        Release(version: AppVersion(version)!,
-                tag: "v\(version)",
-                notes: "",
-                publishedAt: nil,
-                assetURL: URL(string: "https://github.com/huylg/folio/x/Folio-v\(version).zip")!,
-                assetName: "Folio-v\(version).zip",
-                byteCount: 1024,
-                checksumURL: nil,
+        Release(version: version,
                 pageURL: URL(string: "https://github.com/huylg/folio/releases/tag/v\(version)")!)
     }
 
@@ -81,9 +74,10 @@ final class UpdateBadgeTests: XCTestCase {
             .upToDate(AppVersion("1.3.0")!),
             .available(release("1.4.0")),
             .downloading(release("1.4.0"), fraction: 0.5),
-            .readyToInstall(release("1.4.0"), bundle: URL(fileURLWithPath: "/tmp/Folio.app")),
+            .extracting(release("1.4.0"), fraction: 0.5),
+            .readyToInstall(release("1.4.0")),
             .installing,
-            .failed(.network("offline")),
+            .failed(.updater("offline")),
         ]
         for state in states {
             let appearance = UpdateBadgeView.appearance(for: state)
@@ -107,8 +101,7 @@ final class UpdateBadgeTests: XCTestCase {
     }
 
     func testReadyToInstallAsksForTheRestartRatherThanReportingAState() {
-        let state = UpdateState.readyToInstall(release("1.4.0"),
-                                               bundle: URL(fileURLWithPath: "/tmp/Folio.app"))
+        let state = UpdateState.readyToInstall(release("1.4.0"))
         XCTAssertEqual(UpdateBadgeView.appearance(for: state)?.title,
                        "Restart to Update to 1.4.0")
     }
@@ -123,7 +116,7 @@ final class UpdateBadgeTests: XCTestCase {
             ("available", .available(release("1.4.0"))),
             ("checking", .checking),
             ("downloading", .downloading(release("1.4.0"), fraction: 0.5)),
-            ("failed", .failed(.network("offline"))),
+            ("failed", .failed(.updater("offline"))),
         ]
         for (name, state) in pairs {
             let palette = try XCTUnwrap(UpdateBadgeView.appearance(for: state)?.palette)
@@ -140,8 +133,7 @@ final class UpdateBadgeTests: XCTestCase {
         badge.apply(.available(release("1.4.0")))
         let narrow = badge.intrinsicContentSize
 
-        badge.apply(.readyToInstall(release("1.4.0"),
-                                    bundle: URL(fileURLWithPath: "/tmp/Folio.app")))
+        badge.apply(.readyToInstall(release("1.4.0")))
         let wide = badge.intrinsicContentSize
 
         XCTAssertGreaterThan(narrow.width, 0)
@@ -238,7 +230,7 @@ final class UpdateBadgeTests: XCTestCase {
         let narrow = accessory.view.frame.width
 
         UpdateController.shared.setStateForTesting(
-            .readyToInstall(release("1.4.0"), bundle: URL(fileURLWithPath: "/tmp/Folio.app")))
+            .readyToInstall(release("1.4.0")))
         settle()
         XCTAssertGreaterThan(accessory.view.frame.width, narrow,
                              "a longer label must widen the accessory, not clip inside it")
@@ -280,11 +272,11 @@ final class UpdateBadgeTests: XCTestCase {
         XCTAssertFalse(downloading.items.contains { $0.title == "Dismiss" },
                        "a download in progress is not something to dismiss")
 
-        UpdateController.shared.setStateForTesting(.failed(.network("offline")))
+        UpdateController.shared.setStateForTesting(.failed(.updater("offline")))
         settle()
         let failed = try XCTUnwrap(badge.menu(for: try rightClick()))
         XCTAssertTrue(failed.items.contains { $0.title == "Try Again" })
-        XCTAssertTrue(failed.items.contains { $0.title == UpdateError.network("offline").message },
+        XCTAssertTrue(failed.items.contains { $0.title == UpdateError.updater("offline").message },
                       "the reason should be readable, not just \"Update Failed\"")
     }
 

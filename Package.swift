@@ -5,12 +5,14 @@ let package = Package(
     name: "Folio",
     platforms: [.macOS(.v13)],
     dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.6"),
         .package(url: "https://github.com/swiftlang/swift-markdown.git", from: "0.4.0"),
     ],
     targets: [
         .target(
             name: "FolioKit",
             dependencies: [
+                .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "Markdown", package: "swift-markdown"),
             ],
             path: "Sources/FolioKit"

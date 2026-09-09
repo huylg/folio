@@ -84,13 +84,13 @@ final class UpdateBadgeAccessoryController: NSTitlebarAccessoryViewController {
         switch controller.state {
         case .available(let release):
             controller.download(release)
-        case .readyToInstall:
+        case .readyToInstall, .installing:
             controller.install()
         case .failed:
             controller.check(manual: true)
         case .upToDate:
             controller.dismiss()
-        case .downloading, .installing, .checking, .idle:
+        case .downloading, .extracting, .checking, .idle:
             showMenu()
         }
     }
