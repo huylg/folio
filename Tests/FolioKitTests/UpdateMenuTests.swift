@@ -65,36 +65,31 @@ final class UpdateMenuTests: XCTestCase {
         XCTAssertNil(settings.automaticUpdateChecks, "back to unasked")
     }
 
-    func testTheSkippedVersionAndLastCheckRoundTrip() throws {
-        let settings = try scratchSettings()
-        XCTAssertNil(settings.skippedVersion)
-        XCTAssertNil(settings.lastUpdateCheck)
-
-        settings.skippedVersion = "1.4.0"
-        XCTAssertEqual(settings.skippedVersion, "1.4.0")
-        settings.skippedVersion = nil
-        XCTAssertNil(settings.skippedVersion)
-
-        let when = Date(timeIntervalSince1970: 1_780_000_000)
-        settings.lastUpdateCheck = when
-        XCTAssertEqual(settings.lastUpdateCheck?.timeIntervalSince1970 ?? 0,
-                       when.timeIntervalSince1970, accuracy: 1)
+    func testLegacyConsentMigratesOnceWithoutOverridingSparklePreference() throws {
+        for allowed in [true, false] {
+            let suite = "folio-tests-\(UUID().uuidString)"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+            defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+            let settings = AppSettings(defaults: defaults)
+            defaults.set(allowed, forKey: "automaticUpdateChecks")
+            defaults.set(Date(), forKey: "lastUpdateCheck")
+            settings.migrateUpdateSettings()
+            XCTAssertEqual(settings.automaticUpdateChecks, allowed)
+            XCTAssertNil(defaults.object(forKey: "automaticUpdateChecks"))
+            XCTAssertNil(defaults.object(forKey: "lastUpdateCheck"))
+            settings.automaticUpdateChecks = !allowed
+            defaults.set(allowed, forKey: "automaticUpdateChecks")
+            settings.migrateUpdateSettings()
+            XCTAssertEqual(settings.automaticUpdateChecks, !allowed)
+        }
     }
 
-    /// The updater's settings live in the same domain as everything else, so Reset All Settings
-    /// clears them too — including the answer to the first-run question, which is then asked
-    /// again rather than silently kept.
-    func testResettingClearsTheUpdateSettingsToo() throws {
+    func testResettingClearsSparkleConsent() throws {
         let suite = "folio-tests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        addTeardownBlock { UserDefaults.standard.removePersistentDomain(forName: suite) }
         let settings = AppSettings(defaults: defaults)
-
         settings.automaticUpdateChecks = true
-        settings.skippedVersion = "1.4.0"
         UserDefaults.standard.removePersistentDomain(forName: suite)
-
         XCTAssertNil(settings.automaticUpdateChecks)
-        XCTAssertNil(settings.skippedVersion)
     }
 }

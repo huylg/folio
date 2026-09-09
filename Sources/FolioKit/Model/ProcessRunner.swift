@@ -2,7 +2,7 @@ import Foundation
 
 /// Runs a subprocess synchronously. Both streams are captured, and both are drained: a tool
 /// that fills the 64K buffer of the pipe nobody is reading blocks forever, and some tools
-/// report their failures on stdout. Lifted from `UpdateInstaller`, which now forwards here.
+/// report their failures on stdout.
 public enum ProcessRunner {
 
     public struct Output {

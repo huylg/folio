@@ -12,6 +12,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: folio-release
+  cancel-in-progress: false
+
 jobs:
   release:
     name: Build and publish
@@ -33,10 +37,19 @@ jobs:
           # on macOS 26. Fail here rather than shipping a bundle that looks stale.
           [ "${sdk%%.*}" -ge 26 ] || { echo "::error::need the macOS 26 SDK or newer, got $sdk"; exit 1; }
 
+      - name: Require Sparkle signing configuration
+        env:
+          SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_KEY }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          test -n "$SPARKLE_PUBLIC_KEY" || { echo "::error::Set repository variable SPARKLE_PUBLIC_KEY"; exit 1; }
+          test -n "$SPARKLE_PRIVATE_KEY" || { echo "::error::Set repository secret SPARKLE_PRIVATE_KEY"; exit 1; }
+
       - name: Build the release app and disk image
         id: archive
         env:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_KEY }}
         run: |
           name="Folio-$TAG.dmg"
           # Stamp the tag into the bundle. Without it every published build reports the
@@ -47,12 +60,17 @@ jobs:
           echo "bundle version: $stamped"
           [ "$stamped" = "${TAG#v}" ] || { echo "::error::version stamp is $stamped, expected ${TAG#v}"; exit 1; }
           mv build/Folio.dmg "$name"
-          # Published beside the image so the in-app updater can tell a truncated or swapped
-          # download from a good one. TLS to GitHub is still the trust anchor: the bundle is
-          # signed ad hoc, so there is no publisher signature to check the image against.
+          # Keep the sidecar for users upgrading from the pre-Sparkle updater.
           shasum -a 256 "$name" | awk '{print $1}' > "$name.sha256"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "asset=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Generate signed update feed
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          TAG: ${{ steps.archive.outputs.tag }}
+          ASSET: ${{ steps.archive.outputs.asset }}
+        run: python3 Tools/create_appcast.py "$ASSET" "$TAG"
 
       - name: Publish the release
         env:
@@ -62,8 +80,9 @@ jobs:
           asset="${{ steps.archive.outputs.asset }}"
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "$asset" "$asset.sha256" --clobber
+            gh release upload "$tag" appcast.xml --clobber
           else
-            gh release create "$tag" "$asset" "$asset.sha256" \
+            gh release create "$tag" "$asset" "$asset.sha256" appcast.xml \
               --title "Folio $tag" \
               --generate-notes
           fi

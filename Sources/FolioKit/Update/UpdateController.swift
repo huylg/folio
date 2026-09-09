@@ -1,226 +1,305 @@
 import AppKit
+import Sparkle
 
 extension Notification.Name {
-    /// Posted on the main queue whenever `UpdateController.shared.state` changes.
     public static let folioUpdateStateChanged = Notification.Name("folioUpdateStateChanged")
 }
 
-/// Where an update has got to.
 public enum UpdateState: Equatable {
-    /// Nothing to say. The badge shows nothing at all in this state.
     case idle
     case checking
-    /// Only reached by a manual check — an automatic one that finds nothing goes back to `.idle`
-    /// rather than telling the reader something they did not ask about.
     case upToDate(AppVersion)
     case available(Release)
     case downloading(Release, fraction: Double)
-    case readyToInstall(Release, bundle: URL)
+    case extracting(Release, fraction: Double)
+    case readyToInstall(Release)
     case installing
     case failed(UpdateError)
 }
 
-/// Drives the update: checks, downloads, and hands off to the installer.
-///
-/// A singleton posting through `NotificationCenter`, in the shape `AppSettings` already uses. The
-/// badge in every open window listens for the same notification, so the controller never holds a
-/// reference to a window and a window that opens mid-download picks up the state it finds.
-public final class UpdateController {
+/// The small part of Sparkle needed by our controls, replaceable in lifecycle tests.
+protocol UpdateChecking: AnyObject {
+    var automaticallyChecksForUpdates: Bool { get set }
+    var canCheckForUpdates: Bool { get }
+    var lastUpdateCheckDate: Date? { get }
+    func start() throws
+    func checkForUpdates()
+    func checkForUpdatesInBackground()
+}
 
+extension SPUUpdater: UpdateChecking {}
+
+/// Sparkle owns scheduling, downloads, verification and replacement. This controller only
+/// connects its user-driver callbacks to Folio's titlebar and settings.
+public final class UpdateController: NSObject {
     public static let shared = UpdateController()
-
-    /// How long an automatic check waits before running again. A manual check ignores it.
-    public static let automaticInterval: TimeInterval = 24 * 60 * 60
-
-    private let feed: ReleaseFeed
+    private var updater: UpdateChecking?
     private let settings: AppSettings
-    private let runningVersion: AppVersion?
-    /// Where the app we would replace lives. A closure rather than a call to
-    /// `UpdateInstaller.installedBundleURL`, because under `swift test` that is correctly nil and
-    /// every decision downstream of it would be untestable.
-    private let installedBundle: () -> URL?
-    private var installer: UpdateInstaller?
+    private let hostBundle: Bundle
+    private let isInstalled: () -> Bool
+    private var started = false
+    private var choice: ((SPUUserUpdateChoice) -> Void)?
+    private var cancellation: (() -> Void)?
+    private var retryTermination: (() -> Void)?
+    private var expectedBytes: UInt64 = 0
+    private var receivedBytes: UInt64 = 0
+    private var release: Release?
+    private lazy var standard = SPUStandardUserDriver(hostBundle: hostBundle, delegate: nil)
+    private var usesStandardUI = false
 
-    init(feed: ReleaseFeed = GitHubReleaseFeed(),
-         settings: AppSettings = .shared,
-         runningVersion: AppVersion? = AppVersion.current,
-         installedBundle: @escaping () -> URL? = { UpdateInstaller.installedBundleURL }) {
-        self.feed = feed
+    init(updater: UpdateChecking? = nil, settings: AppSettings = .shared,
+         hostBundle: Bundle = .main, isInstalled: (() -> Bool)? = nil) {
+        self.updater = updater
         self.settings = settings
-        self.runningVersion = runningVersion
-        self.installedBundle = installedBundle
+        self.hostBundle = hostBundle
+        self.isInstalled = isInstalled ?? {
+            hostBundle.bundleURL.pathExtension == "app"
+                && hostBundle.bundleIdentifier == "io.huylg.folio"
+        }
+        super.init()
     }
 
     public private(set) var state: UpdateState = .idle {
         didSet {
-            guard state != oldValue else { return }
-            NotificationCenter.default.post(name: .folioUpdateStateChanged, object: self)
+            if state != oldValue {
+                NotificationCenter.default.post(name: .folioUpdateStateChanged, object: self)
+            }
         }
     }
 
-    /// The release waiting to be downloaded or installed, whichever state we are in.
     public var pendingRelease: Release? {
         switch state {
-        case .available(let r), .downloading(let r, _), .readyToInstall(let r, _): return r
+        case .available(let r), .downloading(let r, _), .extracting(let r, _),
+             .readyToInstall(let r): return r
         default: return nil
         }
     }
 
     public var isBusy: Bool {
         switch state {
-        case .checking, .downloading, .installing: return true
+        case .checking, .downloading, .extracting, .installing: return true
         default: return false
         }
     }
 
-    // MARK: - Checking
+    public var lastUpdateCheck: Date? { updater?.lastUpdateCheckDate }
 
-    /// Whether an automatic check is due. Separate from `check` so the caller can decide not to
-    /// touch the network at all rather than calling in and being turned away.
-    public var isAutomaticCheckDue: Bool {
-        guard settings.automaticUpdateChecks == true else { return false }
-        guard let last = settings.lastUpdateCheck else { return true }
-        return Date().timeIntervalSince(last) >= Self.automaticInterval
-    }
-
-    /// Looks for a newer release.
-    ///
-    /// `manual` is the reader asking, and it overrides everything the automatic path defers to:
-    /// the once-a-day throttle, a skipped version, and a `.failed` state left over from last time.
-    public func check(manual: Bool) {
-        guard !isBusy else { return }
-        if !manual && !isAutomaticCheckDue { return }
-
-        guard let runningVersion else {
-            if manual { state = .failed(.unknownRunningVersion) }
-            return
-        }
-        guard installedBundle() != nil else {
-            if manual { state = .failed(.notAnInstalledApp) }
-            return
-        }
-
-        state = .checking
-        settings.lastUpdateCheck = Date()
-
-        feed.latest { [weak self] result in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                switch result {
-                case .failure(let error):
-                    // A background check that cannot reach GitHub says nothing: the reader did not
-                    // ask, and a badge reading "Update Failed" over a flaky café connection is
-                    // noise about a thing they were not doing.
-                    self.state = manual ? .failed(error) : .idle
-                case .success(let release):
-                    self.settle(on: release, running: runningVersion, manual: manual)
-                }
+    /// Force one launch check after starting, as recommended by Sparkle. Subsequent hourly
+    /// checks are scheduled by Sparkle, including for apps that stay open for days.
+    public func start(checkOnLaunch: Bool = true) {
+        guard !started, isInstalled() else { return }
+        settings.migrateUpdateSettings()
+        if updater == nil {
+            guard let key = hostBundle.object(forInfoDictionaryKey: "SUPublicEDKey") as? String,
+                  Data(base64Encoded: key)?.count == 32 else {
+                state = .failed(.configuration("This build has no Sparkle update signing key."))
+                return
             }
+            updater = SPUUpdater(hostBundle: hostBundle, applicationBundle: hostBundle,
+                                 userDriver: self, delegate: nil)
+        }
+        do {
+            try updater?.start()
+            started = true
+            if checkOnLaunch, updater?.automaticallyChecksForUpdates == true {
+                updater?.checkForUpdatesInBackground()
+            }
+        } catch {
+            state = .failed(.updater(error.localizedDescription))
         }
     }
 
-    private func settle(on release: Release, running: AppVersion, manual: Bool) {
-        guard release.version > running else {
-            settings.pendingUpdate = nil
-            state = manual ? .upToDate(running) : .idle
-            return
-        }
-        // Remembered before it is shown, so quitting the window the pill is in does not lose it.
-        settings.pendingUpdate = release
-        if !manual, settings.skippedVersion == release.version.description {
-            state = .idle
-            return
-        }
-        state = .available(release)
+    /// Call only in response to a user preference change, so Sparkle can reset its schedule.
+    public func automaticChecksChanged() {
+        guard started else { start(); return }
+        updater?.automaticallyChecksForUpdates = settings.automaticUpdateChecks == true
     }
 
-    /// Puts back an update found on an earlier launch.
-    ///
-    /// Called before `check` on startup and costs no network. Without it the throttle and the
-    /// forgetting compound: an update found at nine, quit at ten, is invisible until the next
-    /// day's check — the app knew and threw it away.
-    public func restorePendingUpdate() {
-        guard case .idle = state else { return }
-        guard let runningVersion, let pending = settings.pendingUpdate else { return }
-        // Stale once the reader has updated by hand, or skipped it since.
-        guard pending.version > runningVersion else {
-            settings.pendingUpdate = nil
-            return
-        }
-        guard settings.skippedVersion != pending.version.description else { return }
-        state = .available(pending)
+    public func check(manual: Bool) {
+        guard manual else { return } // Scheduled checks belong exclusively to Sparkle.
+        guard isInstalled() else { state = .failed(.notAnInstalledApp); return }
+        start(checkOnLaunch: false)
+        guard started else { return }
+        showUpdateInFocus()
+        if updater?.canCheckForUpdates == true { updater?.checkForUpdates() }
     }
-
-    /// Stop offering this one. The next release supersedes it, and a manual check ignores it.
-    public func skip(_ release: Release) {
-        settings.skippedVersion = release.version.description
-        settings.pendingUpdate = nil
-        state = .idle
-    }
-
-    /// Clears the pill without forgetting the update: it comes back on the next launch, which is
-    /// the difference between "not now" and "never" — `skip` is the one that means never.
-    public func dismiss() {
-        guard !isBusy else { return }
-        state = .idle
-    }
-
-    // MARK: - Downloading
 
     public func download(_ release: Release) {
-        guard !isBusy else { return }
-        state = .downloading(release, fraction: 0)
+        guard case .available(let offered) = state, release == offered else { return }
+        respond(.install)
+    }
 
-        let installer = UpdateInstaller()
-        self.installer = installer
-        installer.fetch(release) { [weak self] fraction in
-            guard let self, case .downloading = self.state else { return }
-            self.state = .downloading(release, fraction: fraction)
-        } completion: { [weak self] result in
-            guard let self else { return }
-            self.installer = nil
-            switch result {
-            case .success(let bundle):
-                self.state = .readyToInstall(release, bundle: bundle)
-            case .failure(let error):
-                self.state = .failed(error)
-            }
-        }
+    public func install() {
+        if case .readyToInstall = state { respond(.install) }
+        else if case .installing = state { retryTermination?() }
+    }
+
+    public func skip(_ release: Release) {
+        guard case .available(let offered) = state, release == offered else { return }
+        respond(.skip)
+        state = .idle
+    }
+
+    public func dismiss() {
+        guard !isBusy else { return }
+        respond(.dismiss)
+        state = .idle
     }
 
     public func cancelDownload() {
-        installer?.cancel()
-        installer = nil
+        guard case .downloading = state else { return }
+        let cancel = cancellation
+        cancellation = nil
+        cancel?()
         state = .idle
     }
 
-    // MARK: - Installing
-
-    /// Replaces the running bundle and quits so the script can relaunch it.
-    ///
-    /// Returns without terminating if the swap could not be started, leaving the reason in
-    /// `state` — including the read-only-location case, where the unpacked copy is revealed in the
-    /// Finder for the reader to move in by hand.
-    public func install() {
-        guard case .readyToInstall(_, let bundle) = state else { return }
-        guard let destination = installedBundle() else {
-            state = .failed(.notAnInstalledApp)
-            return
-        }
-
-        state = .installing
-        if let error = UpdateInstaller.install(replacement: bundle, over: destination) {
-            state = .failed(error)
-            if case .notWritable = error {
-                NSWorkspace.shared.activateFileViewerSelecting([bundle])
-            }
-            return
-        }
-        NSApp.terminate(nil)
+    private func respond(_ response: SPUUserUpdateChoice) {
+        let reply = choice
+        choice = nil // Sparkle can synchronously provide the next callback.
+        reply?(response)
     }
 
-    // MARK: - Test seam
+    func setStateForTesting(_ state: UpdateState) { self.state = state }
+}
 
-    /// Lets a test drive the badge through every state without a network or a bundle.
-    func setStateForTesting(_ newState: UpdateState) { state = newState }
+extension UpdateController: SPUUserDriver {
+    public func show(_ request: SPUUpdatePermissionRequest,
+                     reply: @escaping (SUUpdatePermissionResponse) -> Void) {
+        standard.show(request, reply: reply)
+    }
+
+    public func showUserInitiatedUpdateCheck(cancellation: @escaping () -> Void) {
+        self.cancellation = cancellation
+        state = .checking
+    }
+
+    public func showUpdateFound(with item: SUAppcastItem, state updateState: SPUUserUpdateState,
+                                reply: @escaping (SPUUserUpdateChoice) -> Void) {
+        // Let Sparkle present special upgrade/information-only notices correctly. Folio's
+        // ordinary releases have a downloadable archive and use the titlebar.
+        usesStandardUI = item.isInformationOnlyUpdate || item.isMajorUpgrade
+        if usesStandardUI {
+            standard.showUpdateFound(with: item, state: updateState, reply: reply)
+            return
+        }
+        receiveRelease(Release(version: item.displayVersionString,
+                               pageURL: item.fullReleaseNotesURL ?? item.releaseNotesURL ?? UpdateSource.releasesPageURL),
+                       stage: updateState.stage, userInitiated: updateState.userInitiated, reply: reply)
+    }
+
+    func receiveRelease(_ release: Release, stage: SPUUserUpdateStage, userInitiated: Bool = false,
+                        reply: @escaping (SPUUserUpdateChoice) -> Void) {
+        let skipped = settings.legacySkippedUpdate
+        settings.legacySkippedUpdate = nil
+        if !userInitiated, skipped == release.version {
+            reply(.skip)
+            return
+        }
+        self.release = release
+        cancellation = nil
+        choice = reply
+        state = stage == .installing ? .readyToInstall(release) : .available(release)
+    }
+
+    public func showUpdateReleaseNotes(with downloadData: SPUDownloadData) {
+        if usesStandardUI { standard.showUpdateReleaseNotes(with: downloadData) }
+    }
+    public func showUpdateReleaseNotesFailedToDownloadWithError(_ error: Error) {
+        if usesStandardUI { standard.showUpdateReleaseNotesFailedToDownloadWithError(error) }
+    }
+
+    public func showUpdateNotFoundWithError(_ error: Error, acknowledgement: @escaping () -> Void) {
+        // Preserve Sparkle's explanation (including unsupported macOS versions) instead of
+        // incorrectly reporting every "no compatible update" as "up to date".
+        let reason = ((error as NSError).userInfo[SPUNoUpdateFoundReasonKey] as? NSNumber)?.int32Value
+        if let reason, [SPUNoUpdateFoundReason.onLatestVersion.rawValue,
+                        SPUNoUpdateFoundReason.onNewerThanLatestVersion.rawValue].contains(reason),
+           let version = AppVersion.fromBundle(hostBundle) {
+            state = .upToDate(version)
+        } else {
+            state = .failed(.updater(error.localizedDescription))
+        }
+        acknowledgement()
+    }
+
+    public func showUpdaterError(_ error: Error, acknowledgement: @escaping () -> Void) {
+        state = .failed(.updater(error.localizedDescription))
+        if usesStandardUI { standard.showUpdaterError(error, acknowledgement: acknowledgement) }
+        else { acknowledgement() }
+    }
+
+    public func showDownloadInitiated(cancellation: @escaping () -> Void) {
+        self.cancellation = cancellation
+        expectedBytes = 0
+        receivedBytes = 0
+        if let release { state = .downloading(release, fraction: 0) }
+        if usesStandardUI { standard.showDownloadInitiated(cancellation: cancellation) }
+    }
+    public func showDownloadDidReceiveExpectedContentLength(_ expectedContentLength: UInt64) {
+        expectedBytes = expectedContentLength
+        updateDownloadProgress()
+        if usesStandardUI { standard.showDownloadDidReceiveExpectedContentLength(expectedContentLength) }
+    }
+    public func showDownloadDidReceiveData(ofLength length: UInt64) {
+        receivedBytes += length
+        updateDownloadProgress()
+        if usesStandardUI { standard.showDownloadDidReceiveData(ofLength: length) }
+    }
+    private func updateDownloadProgress() {
+        guard let release else { return }
+        let fraction = expectedBytes == 0 ? 0 : min(1, Double(receivedBytes) / Double(expectedBytes))
+        state = .downloading(release, fraction: fraction)
+    }
+    public func showDownloadDidStartExtractingUpdate() {
+        cancellation = nil
+        if let release { state = .extracting(release, fraction: 0) }
+        if usesStandardUI { standard.showDownloadDidStartExtractingUpdate() }
+    }
+    public func showExtractionReceivedProgress(_ progress: Double) {
+        if let release { state = .extracting(release, fraction: min(1, max(0, progress))) }
+        if usesStandardUI { standard.showExtractionReceivedProgress(progress) }
+    }
+    public func showReady(toInstallAndRelaunch reply: @escaping (SPUUserUpdateChoice) -> Void) {
+        if usesStandardUI { standard.showReady(toInstallAndRelaunch: reply); return }
+        choice = reply
+        if let release { state = .readyToInstall(release) }
+    }
+    public func showInstallingUpdate(withApplicationTerminated applicationTerminated: Bool,
+                                     retryTerminatingApplication: @escaping () -> Void) {
+        state = .installing
+        retryTermination = applicationTerminated ? nil : retryTerminatingApplication
+        if usesStandardUI {
+            standard.showInstallingUpdate(withApplicationTerminated: applicationTerminated,
+                                           retryTerminatingApplication: retryTerminatingApplication)
+        }
+    }
+    public func showUpdateInstalledAndRelaunched(_ relaunched: Bool,
+                                                acknowledgement: @escaping () -> Void) {
+        state = .idle
+        acknowledgement()
+    }
+    public func dismissUpdateInstallation() {
+        choice = nil
+        cancellation = nil
+        retryTermination = nil
+        release = nil
+        if usesStandardUI { standard.dismissUpdateInstallation() }
+        usesStandardUI = false
+        // Sparkle tears down immediately after acknowledgement; keep the outcome readable.
+        switch state {
+        case .failed, .upToDate: break
+        default: state = .idle
+        }
+    }
+    public func showUpdateInFocus() {
+        if usesStandardUI { standard.showUpdateInFocus(); return }
+        guard let app = NSApp else { return }
+        app.activate(ignoringOtherApps: true)
+        if let window = app.windows.first(where: { $0.windowController is MainWindowController }) {
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            (app.delegate as? AppDelegate)?.newWindow(nil)
+        }
+    }
 }

@@ -80,30 +80,64 @@ download before installation.
 
 ## Updating
 
-Folio checks its own GitHub releases and, when there is a newer one, says so with a small pill in
-the titlebar. Clicking it downloads the release; clicking it again swaps the bundle and relaunches.
-The disk image is mounted, the app copied off it, and the volume unmounted, so an update taken this
-way needs none of the drag-across that installing by hand does. Releases up to v1.3.0 were zips and
-are still accepted, so a reader on an old build is not stranded.
-A right-click on the pill offers the release notes, skipping the version, and cancelling a download
-in progress.
+Folio uses [Sparkle 2](https://sparkle-project.org) to check, verify, download, and install updates.
+With automatic checks enabled, it checks at launch and every hour while running. The preference
+is opt-in; `Folio › Check for Updates…` and Settings › Advanced › Check Now work either way.
+Existing automatic-check and skipped-version preferences are carried over from the previous updater.
 
-The check is a preference rather than a default. Folio otherwise never reaches the network without
-being asked — remote images are off for the same reason — so it puts the question once, on first
-launch, and honours the answer. `Folio › Check for Updates…` works either way, and Settings ›
-Advanced has the switch, the version the app is running, and a Check Now button.
+The titlebar pill shows **Update Available**, **Downloading…**, **Preparing Update…**, and
+**Restart to Update**. Click once to download and again when ready to restart. Right-click to
+view release notes, skip a version, or cancel an active download. Sparkle may also finish an
+already prepared installation when you quit normally. Dismissing an available update leaves
+Sparkle free to remind you later; skipping suppresses that version until a manual check.
 
-Two limits worth stating plainly:
+Releases include a signed Sparkle `appcast.xml` feed and an Ed25519 signature for the archive.
+The bundled public key verifies the archive before extraction. The `.dmg` and `.sha256` sidecar
+remain available so the old updater can install the first Sparkle-enabled release. That first
+upgrade still uses the old updater's verification; Sparkle verifies subsequent upgrades.
 
-- The bundle is signed ad hoc and is not notarized, so there is no publisher signature to check a
-  download against. The trust anchor is HTTPS to GitHub plus the SHA-256 the release workflow
-  publishes beside the disk image, which catches a corrupt or substituted asset but not a
-  compromised GitHub account. Before anything is installed the unpacked bundle also has to identify itself as
-  `io.huylg.folio`, carry a runnable executable, and report a version — a download that fails any
-  of those is discarded with the installed copy untouched.
-- Folio will not ask for an administrator. A copy in `/Applications` under a standard account
-  cannot be replaced in place, so the updater reveals the new bundle in the Finder and leaves the
-  move to you.
+The application remains ad-hoc signed and is not notarized. Sparkle's update signatures do not
+replace Apple Developer ID signing or remove the first-install Gatekeeper restrictions.
+
+### Release signing setup
+
+The Folio public key is stored in `Support/Info.plist`, so local builds and CI builds
+include it automatically. The matching private key is stored in this Mac's login Keychain
+under account `io.huylg.folio` and in the GitHub repository secret `SPARKLE_PRIVATE_KEY`.
+The release workflow also has the public key available as repository variable
+`SPARKLE_PUBLIC_KEY`.
+
+Build locally without setting any environment variables:
+
+```bash
+make app                          # Packaged app with updates enabled
+make dmg CONFIG=release            # Release disk image
+make appcast CONFIG=release        # DMG, checksum, and signed appcast in build/
+```
+
+`make appcast` signs with the existing Keychain item; macOS may request Keychain access.
+For a specific release version, pass `VERSION=1.11.0` (for example). Nothing is uploaded by
+these commands. A new Mac can build the app with the checked-in public key; signing releases
+requires securely importing the existing private key into that Mac's Keychain:
+
+```bash
+swift package resolve
+.build/artifacts/sparkle/Sparkle/bin/generate_keys --account io.huylg.folio -f <secure-backup-file>
+```
+
+Keep a secure backup of the private key. Do not generate a replacement for an existing release
+identity: installed clients trust the matching public key. Keep `CFBundleVersion` increasing;
+Sparkle uses it for version comparison.
+
+GitHub Actions uses `SPARKLE_PRIVATE_KEY` via stdin to generate the signed appcast, and
+publishes the `.dmg`, `.sha256`, and `appcast.xml` after validation. The feed URL is the latest
+release's `appcast.xml` asset; no separate server is needed. CI refuses to sign if its secret
+is missing, or to publish if the public/private keys do not match.
+
+For isolated tests, `SPARKLE_PUBLIC_KEY` can override the bundled public key and
+`SPARKLE_PRIVATE_KEY` can override Keychain signing. Run
+`python3 Tools/test_sparkle_release.py` after `make app` to verify framework startup, packaging,
+and archive signatures with a temporary test key; CI also runs this check.
 
 ## Building
 
@@ -184,10 +218,10 @@ FOLIO_SCROLL_HARNESS=1 FOLIO_HARNESS_PARAGRAPHS=6000 \
 Sources/FolioKit/
   Model/        document loading, frontmatter, settings
   Rendering/    Markdown → components: attributes, metrics, theme, block views
-  Update/       the release check, the download and its verification, the bundle swap
+  Update/       Sparkle integration and update presentation
   UI/           the window, the welcome screen, the reading pane, the component stack, the outline
 Sources/Folio/  the executable
-Tools/          the app icon, drawn in CoreGraphics
+Tools/          app icon, Sparkle packaging and release feed generation
 Tests/          layout and interaction tests, mostly against real windows
 sample-vault/   documents to read while working on it
 ```
@@ -212,12 +246,7 @@ Two GitHub Actions workflows, both on `macos-26`:
 
 - `ci.yml` builds and runs the suite on every push to `main` and every pull request, then attaches
   the debug `Folio.app` to the run as an artifact.
-- `release.yml` fires on a `v*` tag: it runs the tests, builds `make dmg CONFIG=release VERSION=…`
-  with the tag stamped into the bundle, and publishes `Folio-<tag>.dmg` and its `.sha256` on a
-  GitHub release with generated notes. The image opens on a window holding the app next to a
-  symlink to `/Applications`, so installing is the usual drag across. The stamp is checked before
-  the image is built — a bundle that still claimed the template's version would leave the updater
-  unable to tell one release from the next.
-
-An update installed from inside the app clears the quarantine flag itself, so the first-launch step
-under **Download and install** is only needed for the first copy.
+- `release.yml` fires on a `v*` tag: it builds `make dmg CONFIG=release VERSION=…`
+  with the tag stamped into the bundle, embeds the update public key, and generates a signed
+  Sparkle appcast. It publishes `Folio-<tag>.dmg`, its `.sha256`, and `appcast.xml` together on
+  a GitHub release. Signing setup is described under **Release signing setup** above.

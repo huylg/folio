@@ -8,19 +8,17 @@ ICNS     = build/$(APP).icns
 DMG      = build/$(APP).dmg
 DMGROOT  = build/dmg
 
-# Stamped into the bundle's Info.plist so the running app knows its own version — the updater
-# compares it against the latest GitHub release, and a bundle that always claimed 1.0 would think
-# itself out of date forever. The release workflow passes the tag explicitly; a working tree falls
-# back to its newest tag, and a checkout with no tags at all leaves the template values alone.
+# Release tags provide the displayed version. Sparkle compares the monotonically increasing
+# build number, so release checkouts must include the full Git history.
 VERSION  ?= $(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
 BUILDNUM ?= $(shell git rev-list --count HEAD 2>/dev/null)
 
-.PHONY: all build app icon dmg run test dump snapshot clean
+.PHONY: all build app icon dmg appcast run test dump snapshot clean
 
 all: app
 
 build:
-	swift build -c $(CONFIG)
+	swift build -c $(CONFIG) -Xlinker -rpath -Xlinker @executable_path/../Frameworks
 
 test:
 	swift test
@@ -53,7 +51,9 @@ app: build $(ICNS)
 	@for b in $(BUILDDIR)/*.bundle; do \
 		[ -d "$$b" ] && cp -R "$$b" $(BUNDLE)/Contents/Resources/ || true; \
 	done
+	python3 Tools/package_sparkle.py $(BUNDLE) $(BUILDDIR)
 	codesign --force --sign - $(BUNDLE)
+	codesign --verify --deep --strict $(BUNDLE)
 	@echo "Built $(BUNDLE)"
 
 # The release asset. A disk image rather than a zip so the install is the usual macOS
@@ -66,6 +66,12 @@ dmg: app
 	ln -s /Applications $(DMGROOT)/Applications
 	hdiutil create -volname $(APP) -srcfolder $(DMGROOT) -ov -format UDZO $(DMG)
 	@echo "Built $(DMG)"
+
+# Prepare signed release assets locally using the Folio Keychain item. Nothing is uploaded.
+appcast: dmg
+	cp $(DMG) build/$(APP)-v$(VERSION).dmg
+	shasum -a 256 build/$(APP)-v$(VERSION).dmg | awk '{print $$1}' > build/$(APP)-v$(VERSION).dmg.sha256
+	python3 Tools/create_appcast.py build/$(APP)-v$(VERSION).dmg v$(VERSION)
 
 run: app
 	open $(BUNDLE)

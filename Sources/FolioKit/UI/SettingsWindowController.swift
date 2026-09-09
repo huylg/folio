@@ -245,10 +245,10 @@ private final class AdvancedPane: SettingsPane {
         addRow("Updates:", checkRow)
 
         addSwitchRow("Check for updates automatically",
-                     "Once a day, over HTTPS from the GitHub releases page",
+                     "At launch and every hour, over HTTPS",
                      isOn: AppSettings.shared.automaticUpdateChecks == true) {
             AppSettings.shared.automaticUpdateChecks = $0
-            if $0 { UpdateController.shared.check(manual: false) }
+            UpdateController.shared.automaticChecksChanged()
         }
 
         let box = NSBox()
@@ -287,8 +287,10 @@ private final class AdvancedPane: SettingsPane {
             statusLabel.stringValue = "Folio \(release.version) is available."
         case .downloading(_, let fraction):
             statusLabel.stringValue = "Downloading… \(Int((fraction * 100).rounded()))%"
-        case .readyToInstall(let release, _):
+        case .readyToInstall(let release):
             statusLabel.stringValue = "Folio \(release.version) is ready to install."
+        case .extracting:
+            statusLabel.stringValue = "Preparing update…"
         case .installing:
             statusLabel.stringValue = "Installing…"
         case .failed(let error):
@@ -297,7 +299,7 @@ private final class AdvancedPane: SettingsPane {
     }
 
     private static func lastCheckedSummary() -> String {
-        guard let last = AppSettings.shared.lastUpdateCheck else { return "Not checked yet." }
+        guard let last = UpdateController.shared.lastUpdateCheck else { return "Not checked yet." }
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .full
         return "Last checked \(formatter.localizedString(for: last, relativeTo: Date()))."
@@ -311,6 +313,7 @@ private final class AdvancedPane: SettingsPane {
         let domain = Bundle.main.bundleIdentifier ?? "io.huylg.folio"
         UserDefaults.standard.removePersistentDomain(forName: domain)
         AppSettings.shared.applyTheme()
+        UpdateController.shared.automaticChecksChanged()
         NotificationCenter.default.post(name: .folioSettingsChanged, object: nil)
     }
 }
