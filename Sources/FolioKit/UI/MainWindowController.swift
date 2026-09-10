@@ -20,6 +20,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private(set) var showsDocumentScreen = false
     /// Whether the outline's opening width has been set, which happens once per window.
     private var didPlaceSidebar = false
+    private var sidebarCollapsedWithOutline = false
+    private var hasOutline: Bool { currentDocument?.outline.isEmpty == false }
 
     /// The screens behind the one on show, newest last — the window's navigation history.
     /// `openDocument` pushes the screen it leaves, `goBack` pops, and the back button exists
@@ -195,16 +197,24 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// Puts a document on screen. History is the callers' business: `openDocument` pushes
     /// the screen it leaves, `goBack` has already popped.
     private func display(_ doc: MarkdownDocument, scrollTo anchor: String? = nil) {
+        if hasOutline { sidebarCollapsedWithOutline = outlineItem.isCollapsed }
         currentDocument = doc
+        outlineItem.isCollapsed = !hasOutline || presentationMode || sidebarCollapsedWithOutline
         // Before the render, not after: the reading pane decides its column count from its
         // own width, and on the welcome screen it has not been laid out at all.
         showDocumentScreen()
+        updateDocumentToolbar()
+        window?.layoutIfNeeded()
+        // Defer the initial width until a document actually has an outline to display.
+        if hasOutline, !outlineItem.isCollapsed, !didPlaceSidebar {
+            didPlaceSidebar = true
+            DispatchQueue.main.async { [weak self] in self?.openSidebarAtFullWidth() }
+        }
         documentVC.render(document: doc)
         outlineVC.update(document: doc)
         NSDocumentController.shared.noteNewRecentDocumentURL(doc.url)
         AppSettings.shared.noteRecent(doc.url)
         updateTitle()
-        updateBackButton()
         if let anchor {
             // After the first layout pass, so the target's position is real.
             DispatchQueue.main.async { [weak self] in
@@ -243,14 +253,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         // Laid out here so the pane has its real width — and its inset under the toolbar —
         // before the document is rendered into it.
         window.layoutIfNeeded()
-        // `preferredThicknessFraction` is a hint AppKit is free to ignore for a sidebar, and it
-        // did: the outline opened on its 200pt minimum. The divider is placed explicitly once the
-        // window has its real width — the first time only, so coming back to a document does not
-        // undo a width the reader dragged for themselves.
-        if !didPlaceSidebar {
-            didPlaceSidebar = true
-            DispatchQueue.main.async { [weak self] in self?.openSidebarAtFullWidth() }
-        }
         fadeIn(splitVC.view)
     }
 
@@ -264,6 +266,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         // Presentation mode is a way of reading a document, so leaving the document leaves it:
         // full screen with the welcome screen in it is not a state worth being able to reach.
         if presentationMode { togglePresentationMode(nil) }
+        if hasOutline { sidebarCollapsedWithOutline = outlineItem.isCollapsed }
         showsDocumentScreen = false
         currentDocument = nil
         outlineVC.clear()
@@ -334,8 +337,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// The sidebar toggle, built explicitly rather than left to the system identifier.
     ///
     /// `.toggleSidebar` produced no item at all here, which left a collapsed sidebar with no way
-    /// back except the menu — the toolbar was empty. An item of our own is always there, and it is
-    /// the button that reopens the sidebar.
+    /// back except the menu — the toolbar was empty. An item of our own remains available while
+    /// the document has an outline, even when the sidebar is collapsed.
     static let sidebarItemIdentifier = NSToolbarItem.Identifier("folioToggleSidebar")
 
     /// The way back through the window's history.
@@ -345,8 +348,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// the outline: it is the reading screen the reader is leaving, not the sidebar.
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         guard toolbar.identifier == Self.documentToolbarIdentifier else { return [] }
-        var items: [NSToolbarItem.Identifier] = [Self.sidebarItemIdentifier,
-                                                 .sidebarTrackingSeparator]
+        var items: [NSToolbarItem.Identifier] = hasOutline
+            ? [Self.sidebarItemIdentifier, .sidebarTrackingSeparator] : []
         if canGoBack { items.append(Self.backItemIdentifier) }
         return items
     }
@@ -399,24 +402,24 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         window.toolbar = toolbar
     }
 
-    /// Keeps the back button in step with the history when it changes while the document
-    /// toolbar is already installed — the toolbar read its default items once, on attach.
-    private func updateBackButton() {
+    /// Refreshes controls when navigation changes the history or outline availability.
+    private func updateDocumentToolbar() {
         guard let toolbar = window?.toolbar,
               toolbar.identifier == Self.documentToolbarIdentifier else { return }
-        let index = toolbar.items.firstIndex { $0.itemIdentifier == Self.backItemIdentifier }
-        if canGoBack, index == nil {
-            toolbar.insertItem(withItemIdentifier: Self.backItemIdentifier,
-                               at: toolbar.items.count)
-        } else if !canGoBack, let index {
+        let identifiers = toolbarDefaultItemIdentifiers(toolbar)
+        guard toolbar.items.map(\.itemIdentifier) != identifiers else { return }
+        for index in toolbar.items.indices.reversed() {
             toolbar.removeItem(at: index)
+        }
+        for (index, identifier) in identifiers.enumerated() {
+            toolbar.insertItem(withItemIdentifier: identifier, at: index)
         }
     }
 
     // MARK: Actions
 
     @objc func toggleSidebar(_ sender: Any?) {
-        guard showsDocumentScreen else { return }
+        guard showsDocumentScreen, hasOutline else { return }
         splitVC.toggleSidebar(sender)
     }
 
@@ -558,7 +561,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             documentVC.setTextScale(1.35)
         } else {
             if fullScreen { window?.toggleFullScreen(nil) }
-            outlineItem.isCollapsed = false
+            outlineItem.isCollapsed = !hasOutline
             documentVC.setTextScale(1.0)
         }
     }
@@ -611,7 +614,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             return documentVC.readingPane?.findController.validate(action) ?? false
         case #selector(toggleSidebar(_:)):
             menuItem.title = sidebarCollapsed ? "Show Sidebar" : "Hide Sidebar"
-            return showsDocumentScreen
+            return showsDocumentScreen && hasOutline
         case #selector(goBack(_:)):
             return canGoBack
         case #selector(setColumnLayout(_:)):
