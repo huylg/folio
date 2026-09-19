@@ -55,7 +55,7 @@ final class DocumentSelectionTests: XCTestCase {
         stack.selectAll(nil)
         stack.copy(nil)
         XCTAssertTrue(NSPasteboard.general.string(forType: .string)?.contains("Paragraph 500") == true)
-        XCTAssertEqual(stack.subviews.count, count)
+        XCTAssertEqual(stack.subviews.filter { !($0 is FlashView) && !($0 is CopyFlashView) }.count, count)
         XCTAssertEqual(stack.measuredComponents, measures)
         XCTAssertEqual(TextComponentView.configureCount, configurations)
         let selection = stack.selectionController.selectedRange
@@ -65,6 +65,67 @@ final class DocumentSelectionTests: XCTestCase {
         pane.window?.setContentSize(NSSize(width: pane.frame.width + 100, height: 620))
         pane.layoutSubtreeIfNeeded()
         XCTAssertEqual(stack.selectionController.selectedRange, selection)
+    }
+
+    func testCopyingFlashesTheSelection() throws {
+        let pane = try pane("# Heading\n\nA short paragraph to copy.")
+        let stack = pane.stackView
+        stack.selectAll(nil)
+        XCTAssertEqual(stack.flashCount, 0, "nothing should be flashing yet")
+        let rects = stack.selectionRects(stack.selectionController.selectedRange)
+            .filter { $0.intersects(stack.selectionVisibleRect) && $0.width > 0 && $0.height > 0 }
+        XCTAssertFalse(rects.isEmpty, "the fixture should have visible selected glyphs")
+
+        stack.copy(nil)
+        XCTAssertGreaterThan(stack.flashCount, 0, "the copied text was not flashed")
+        let flashes = stack.subviews.compactMap { $0 as? CopyFlashView }
+        XCTAssertFalse(flashes.isEmpty, "copy should use the glass slide, not the landing glow")
+        for rect in rects {
+            XCTAssertTrue(flashes.contains { $0.frame.insetBy(dx: -1, dy: -1).contains(rect) },
+                          "no glow covers the copied fragment \(rect.integral)")
+        }
+        XCTAssertNil(flashes.first?.hitTest(NSPoint(x: flashes[0].bounds.midX,
+                                                    y: flashes[0].bounds.midY)),
+                     "the glow must not swallow clicks")
+    }
+
+    func testCopyWithNoSelectionDoesNotFlash() throws {
+        let pane = try pane("# Heading\n\nA paragraph.")
+        pane.stackView.copy(nil)
+        XCTAssertEqual(pane.stackView.flashCount, 0)
+    }
+
+    func testTheCopyFlashFadesAway() throws {
+        DocumentStackView.copyFlashDuration = 0.05
+        DocumentStackView.copyFlashCooldown = 0
+        defer {
+            DocumentStackView.copyFlashDuration = 1.2
+            DocumentStackView.copyFlashCooldown = 0.4
+        }
+        let pane = try pane("# Heading\n\nA short paragraph to copy.")
+        pane.stackView.selectAll(nil)
+        pane.stackView.copy(nil)
+        XCTAssertGreaterThan(pane.stackView.flashCount, 0)
+        XCTAssertTrue(waitUntil(2) { pane.stackView.flashCount == 0 },
+                      "the glow never went away")
+    }
+
+    func testHeldCopyDoesNotStackSheens() throws {
+        DocumentStackView.copyFlashDuration = 1
+        DocumentStackView.copyFlashCooldown = 1
+        defer {
+            DocumentStackView.copyFlashDuration = 1.2
+            DocumentStackView.copyFlashCooldown = 0.4
+        }
+        let pane = try pane("# Heading\n\nA short paragraph to copy.")
+        let stack = pane.stackView
+        stack.selectAll(nil)
+        stack.copy(nil)
+        let count = stack.flashCount
+        XCTAssertGreaterThan(count, 0)
+        stack.copy(nil)
+        stack.copy(nil)
+        XCTAssertEqual(stack.flashCount, count, "a held copy must not start another sheen")
     }
 
     func testAllTextualWidgetsHaveSelectableGeometry() throws {
