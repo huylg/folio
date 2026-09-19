@@ -108,8 +108,7 @@ final class TextSelectionSurface: DocumentSelectionSurface {
         for match in controller.matches(intersecting: range) {
             for rect in rects(for: match) { NSTextFinder.drawIncrementalMatchHighlight(in: rect) }
         }
-        let color = controller.isActive ? NSColor.selectedTextBackgroundColor
-            : NSColor.unemphasizedSelectedTextBackgroundColor
+        let color = controller.isActive ? Ink.selection : Ink.selectionInactive
         color.setFill()
         for rect in rects(for: controller.selectedRange) where controller.selectedRange.length > 0 {
             rect.fill()
@@ -184,9 +183,8 @@ final class DocumentSelectionOverlay: NSView {
         for surface in stack.selectionSurfaces() where surface.manager == nil {
             guard let view = surface.view,
                   NSIntersectionRange(surface.range, selection.selectedRange).length > 0 else { continue }
-            let color = selection.isActive ? NSColor.selectedTextBackgroundColor
-                : NSColor.unemphasizedSelectedTextBackgroundColor
-            color.withAlphaComponent(0.4).setFill()
+            let color = selection.isActive ? Ink.selection : Ink.selectionInactive
+            color.setFill()
             view.convert(surface.frame, to: self).fill()
         }
         // Keep the logical insertion position for keyboard selection without

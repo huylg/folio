@@ -1202,6 +1202,15 @@ public final class DocumentStackView: NSView {
     /// How far the flash extends past the component, so it reads as a glow around the block
     /// rather than a box drawn on it.
     private static let flashInset = NSSize(width: 10, height: 7)
+    /// How far a copy flash extends past the selected glyphs.
+    private static let copyFlashInset = NSSize(width: 2, height: 1)
+    private static let flashRadius: CGFloat = 10
+    private static let copyFlashRadius: CGFloat = 3
+    /// How long the glass sheen takes to cross the copied glyphs.
+    static var copyFlashDuration: TimeInterval = 1.2
+    /// Quiet period after a sheen starts, so a held ⌘C does not stack slides.
+    static var copyFlashCooldown: TimeInterval = 0.4
+    private var copyFlashAvailableAt: TimeInterval = 0
 
     /// Flashes a component's background.
     ///
@@ -1213,13 +1222,42 @@ public final class DocumentStackView: NSView {
         for frame in frames(ofComponent: index) { addFlash(in: frame) }
     }
 
-    private func addFlash(in frame: NSRect) {
+    /// Flashes the glyphs that just went to the clipboard.
+    ///
+    /// A copy is a selection, not a landing: only the visible fragments light up, and they sit
+    /// over the text so a two-word copy does not glow a whole paragraph. The confirmation is a
+    /// sheen that slides across the existing selection — the fill itself does not change.
+    /// A held ⌘C still writes the pasteboard; it does not start another sheen.
+    func flashCopiedSelection() {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now >= copyFlashAvailableAt else { return }
+        copyFlashAvailableAt = now + Self.copyFlashDuration + Self.copyFlashCooldown
+        let visible = selectionVisibleRect
+        for rect in selectionRects(selectionController.selectedRange) {
+            addCopyFlash(in: rect.intersection(visible))
+        }
+    }
+
+    private func addCopyFlash(in frame: NSRect) {
         guard frame.width > 0, frame.height > 0 else { return }
-        let glow = FlashView(frame: frame.insetBy(dx: -Self.flashInset.width,
-                                                  dy: -Self.flashInset.height))
+        let glow = CopyFlashView(frame: frame.insetBy(dx: -Self.copyFlashInset.width,
+                                                      dy: -Self.copyFlashInset.height))
+        glow.prepare(radius: Self.copyFlashRadius)
+        addSubview(glow, positioned: .above, relativeTo: nil)
+        glow.slide(duration: Self.copyFlashDuration) { glow.removeFromSuperview() }
+    }
+
+    private func addFlash(in frame: NSRect,
+                          inset: NSSize = flashInset,
+                          radius: CGFloat = flashRadius,
+                          position: NSWindow.OrderingMode = .below) {
+        guard frame.width > 0, frame.height > 0 else { return }
+        let glow = FlashView(frame: frame.insetBy(dx: -inset.width, dy: -inset.height))
         glow.tint = Ink.accent.withAlphaComponent(Self.flashTint)
-        // Behind everything: the component's own view draws over it, so text stays text.
-        addSubview(glow, positioned: .below, relativeTo: nil)
+        glow.cornerRadius = radius
+        // Navigation sits behind the component so text stays text. Copy sits above so the
+        // selected glyphs themselves are what flashes.
+        addSubview(glow, positioned: position, relativeTo: nil)
 
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = Self.flashDuration
@@ -1228,8 +1266,8 @@ public final class DocumentStackView: NSView {
         }, completionHandler: { glow.removeFromSuperview() })
     }
 
-    /// The flashes currently on screen, for tests.
-    var flashCount: Int { subviews.filter { $0 is FlashView }.count }
+    /// The flashes currently on screen, for tests. Landing glows and copy sheens both count.
+    var flashCount: Int { subviews.filter { $0 is FlashView || $0 is CopyFlashView }.count }
 
     // MARK: Selection
 
@@ -1527,6 +1565,7 @@ public final class DocumentStackView: NSView {
         guard selectionController.selectedRange.length > 0 else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(selectionController.selectedText, forType: .string)
+        flashCopiedSelection()
     }
     public override func selectAll(_ sender: Any?) {
         window?.makeFirstResponder(self)
@@ -1569,6 +1608,7 @@ public final class DocumentStackView: NSView {
 /// and does not appear in the headless snapshots this project checks itself with.
 final class FlashView: NSView {
     var tint: NSColor = .clear { didSet { needsDisplay = true } }
+    var cornerRadius: CGFloat = 10 { didSet { needsDisplay = true } }
 
     override var isFlipped: Bool { true }
     /// Never in the way of a click: it is feedback, not a control.
@@ -1576,6 +1616,61 @@ final class FlashView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         tint.setFill()
-        NSBezierPath(roundedRect: bounds, xRadius: 10, yRadius: 10).fill()
+        NSBezierPath(roundedRect: bounds, xRadius: cornerRadius, yRadius: cornerRadius).fill()
+    }
+}
+
+/// A clip over the copied glyphs. It does not paint a fill — the selection stays as it is —
+/// and only hosts the sliding sheen.
+final class CopyFlashView: NSView {
+    private let sheen = GlassSheenView()
+
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.masksToBounds = true
+        addSubview(sheen)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    func prepare(radius: CGFloat) {
+        layer?.cornerRadius = radius
+    }
+
+    func slide(duration: TimeInterval, completion: @escaping () -> Void) {
+        let width = max(48, bounds.width * 0.45)
+        sheen.frame = NSRect(x: -width, y: 0, width: width, height: bounds.height)
+        if Ink.reduceMotion {
+            completion()
+            return
+        }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = duration
+            // Ease through the selection so the sheen is on screen for most of the duration,
+            // with a light overshoot as it leaves.
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.33, 0.05, 0.2, 1.08)
+            sheen.animator().setFrameOrigin(NSPoint(x: bounds.width, y: 0))
+        }, completionHandler: completion)
+    }
+}
+
+/// The moving highlight on a copy flash — a soft white specular, not a solid bar.
+final class GlassSheenView: NSView {
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let gradient = NSGradient(colorsAndLocations:
+            (NSColor.white.withAlphaComponent(0), 0),
+            (NSColor.white.withAlphaComponent(0.28), 0.28),
+            (NSColor.white.withAlphaComponent(0.9), 0.5),
+            (NSColor.white.withAlphaComponent(0.28), 0.72),
+            (NSColor.white.withAlphaComponent(0), 1)
+        ) else { return }
+        gradient.draw(in: bounds, angle: 12)
     }
 }

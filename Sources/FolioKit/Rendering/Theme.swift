@@ -68,6 +68,16 @@ public enum Ink {
     public static var page: NSColor { .textBackgroundColor }
     public static var mark: NSColor { .findHighlightColor }
 
+    /// Selected glyphs on the dark page. A light white veil, not the system blue.
+    public static var selection: NSColor {
+        NSColor.white.withAlphaComponent(increaseContrast ? 0.30 : 0.20)
+    }
+
+    /// The same veil, quieter, when the reading pane is not first responder.
+    public static var selectionInactive: NSColor {
+        NSColor.white.withAlphaComponent(increaseContrast ? 0.18 : 0.10)
+    }
+
     /// `separatorColor` is documented as unsuitable for split-view and window-chrome
     /// dividers, but is correct for in-content hairlines like card borders and rules.
     public static var hairline: NSColor {

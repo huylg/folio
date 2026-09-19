@@ -76,6 +76,7 @@ public final class TextComponentView: NSTextView, DimmableComponent {
         usesFontPanel = false
         isAutomaticLinkDetectionEnabled = false
         drawsBackground = false
+        selectedTextAttributes = [.backgroundColor: Ink.selection]
         allowsUndo = false
         isVerticallyResizable = false
         isHorizontallyResizable = false
