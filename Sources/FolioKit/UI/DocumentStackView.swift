@@ -1643,18 +1643,29 @@ final class CopyFlashView: NSView {
 
     func slide(duration: TimeInterval, completion: @escaping () -> Void) {
         let width = max(48, bounds.width * 0.45)
-        sheen.frame = NSRect(x: -width, y: 0, width: width, height: bounds.height)
         if Ink.reduceMotion {
-            completion()
+            // Stay for `duration` rather than completing in this turn: a held-copy
+            // cooldown still applies, and tests can observe the confirmation.
+            sheen.frame = NSRect(x: (bounds.width - width) / 2, y: 0,
+                                 width: width, height: bounds.height)
+            Timer.scheduledTimer(withTimeInterval: duration, repeats: false) { _ in
+                completion()
+            }
             return
         }
+        sheen.frame = NSRect(x: -width, y: 0, width: width, height: bounds.height)
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = duration
             // Ease through the selection so the sheen is on screen for most of the duration,
             // with a light overshoot as it leaves.
             context.timingFunction = CAMediaTimingFunction(controlPoints: 0.33, 0.05, 0.2, 1.08)
             sheen.animator().setFrameOrigin(NSPoint(x: bounds.width, y: 0))
-        }, completionHandler: completion)
+        })
+        // Timed independently of the animation completion: AppKit can fire that
+        // handler in this turn under Reduce Motion or a headless runner.
+        Timer.scheduledTimer(withTimeInterval: duration, repeats: false) { _ in
+            completion()
+        }
     }
 }
 
